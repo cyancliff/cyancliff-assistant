@@ -12,7 +12,8 @@
     "mail:auth": "node scripts/gmail-auth.mjs",
     "mail:draft": "node scripts/mail-draft.mjs",
     "workflow": "node scripts/workflow.mjs",
-    "setup": "node scripts/setup.mjs"
+    "setup": "node scripts/setup.mjs",
+    "test:credentials": "node scripts/test-credentials.mjs"
   },
   "engines": {
     "node": ">=22.12.0"

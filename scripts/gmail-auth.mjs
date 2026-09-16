@@ -106,13 +106,52 @@ export function readClient() {
 }
 
 export function readToken() {
+  return readTokenDetailed().token;
+}
+
+/**
+ * 读令牌，并**区分"不存在"和"损坏"**。
+ *
+ * 之前把损坏的令牌当成不存在（都返回 null），于是报错说
+ * "还没有可用的令牌，先跑 --auth" —— 而 --auth 会覆盖掉那个损坏的文件，
+ * 让人以为问题解决了，其实是把可能还能救的东西丢了。
+ * 更重要的是：损坏和不存在是两件事，报错该分开。
+ */
+export function readTokenDetailed() {
   const f = tokenPath();
-  if (!existsSync(f)) return null;
+  if (!existsSync(f)) return { token: null, exists: false, corrupt: false, path: f };
   try {
-    return JSON.parse(readFileSync(f, 'utf8'));
-  } catch {
-    return null;
+    return { token: JSON.parse(readFileSync(f, 'utf8')), exists: true, corrupt: false, path: f };
+  } catch (e) {
+    return { token: null, exists: true, corrupt: true, path: f, error: e.message };
   }
+}
+
+/**
+ * 检查客户端凭据有没有问题。返回 null 表示没问题，否则返回一句人话。
+ *
+ * 单独抽出来是因为**顺序有讲究**：调 API 之前应该先验证客户端凭据，
+ * 再验证令牌。反过来的话，凭据坏的时候会报"令牌有问题"，
+ * 而拿令牌的那一步自己也跑不了（要先读凭据）—— 人照着重试会一直撞同一面墙。
+ *
+ * 这个顺序问题是实测撞出来的：
+ *   凭据文件写成非法 JSON → `--test` 报"还没有可用的令牌，先跑 --auth"
+ *   → 跑 `--auth` → 它读凭据、同样失败 → 但报的还是别的
+ */
+export function credentialsProblem() {
+  const f = credentialsPath();
+  if (!existsSync(f)) return `找不到 OAuth 客户端文件：${f}`;
+  let json;
+  try {
+    json = JSON.parse(readFileSync(f, 'utf8'));
+  } catch (e) {
+    return `${f} 不是合法 JSON：${e.message}`;
+  }
+  const c = json.installed || json.web || json;
+  if (!c.client_id || !c.client_secret) {
+    return `${f} 里没有 client_id / client_secret`;
+  }
+  return null;
 }
 
 function writeToken(tok) {
@@ -130,15 +169,33 @@ function writeToken(tok) {
  * 提前 60 秒算过期（见 writeToken），避免"检查时还没过期、请求发出去就过期"。
  */
 export async function getAccessToken() {
-  const tok = readToken();
+  const t = readTokenDetailed();
+
+  // 先看令牌文件本身有没有问题 —— 这几种情况的处理办法完全不同，
+  // 报成一句"还没有可用的令牌"会让人不知道该修哪个。
+  if (t.corrupt) {
+    throw new Error(
+      `令牌文件损坏：${t.path}\n  ${t.error}\n\n` +
+        `  没法自动修复（内容已经不是 JSON 了）。确认要重来一遍就删掉它，再跑 --auth。`
+    );
+  }
+  if (!t.exists) {
+    throw new Error(
+      `还没有授权令牌。\n  先跑一次：node scripts/gmail-auth.mjs --auth\n  令牌会存到：${t.path}`
+    );
+  }
+
+  const tok = t.token;
   if (tok?.access_token && tok.expires_at && Date.now() < tok.expires_at) {
     return tok.access_token;
   }
   if (!tok?.refresh_token) {
     throw new Error(
-      `还没有可用的令牌（或令牌里没有 refresh_token）。\n` +
-        `  先跑一次：node scripts/gmail-auth.mjs --auth\n` +
-        `  令牌文件：${tokenPath()}`
+      `令牌里没有 refresh_token —— 它过期之后就没法自动续了。\n` +
+        `  这个文件是存在的，但缺了续期必需的那一项。通常是授权时没带上\n` +
+        `  access_type=offline，或者这个客户端之前授权过。\n` +
+        `  处理：删掉 ${t.path}，再去 Google 账号的「第三方访问」里撤销本应用，\n` +
+        `  然后重跑 --auth。`
     );
   }
 
@@ -314,26 +371,58 @@ if (isMain) {
       console.log(`${green('✓')} 授权完成，令牌已存到 ${dim(tokenPath())}`);
       console.log(dim('  这个文件是凭据 —— 已在 .gitignore 里挡住，不要手动复制到别处。'));
     } else if (args.includes('--test')) {
+      // 先验客户端凭据，再验令牌。
+      // 反过来的话，凭据坏的时候会报"令牌有问题，先跑 --auth"，
+      // 而 --auth 自己也要先读凭据 —— 人照着重试会一直撞同一面墙。
+      const credProblem = credentialsProblem();
+      if (credProblem) {
+        throw new Error(
+          `${credProblem}\n\n` +
+            `  这一步要先修好客户端凭据，再谈令牌 —— 拿令牌也要先读它。\n` +
+            `  怎么拿：${'node scripts/setup.mjs'}`
+        );
+      }
+      const t = readTokenDetailed();
+      if (t.corrupt) {
+        throw new Error(
+          `令牌文件损坏：${t.path}\n  ${t.error}\n\n` +
+            `  它没法自动修复（内容已经不是 JSON 了）。\n` +
+            `  确认要重来一遍的话，删掉它再跑 --auth。`
+        );
+      }
       const profile = await gmailFetch('/users/me/profile');
       console.log(`${green('✓')} API 可用`);
       console.log(`  邮箱：${profile.emailAddress}`);
       console.log(`  邮件总数：${profile.messagesTotal}`);
     } else {
-      const tok = readToken();
+      const credProblem = credentialsProblem();
+      const t = readTokenDetailed();
       console.log(`\n${bold('Gmail 凭据状态')}\n`);
       console.log(`  .env             ${ENV_PATH}${existsSync(ENV_PATH) ? '' : dim('  （不存在）')}`);
-      console.log(`  客户端凭据       ${credentialsPath()}${existsSync(credentialsPath()) ? '' : dim('  （不存在）')}`);
-      console.log(`  令牌             ${tokenPath()}${tok ? '' : dim('  （不存在）')}`);
-      if (tok) {
-        const left = tok.expires_at ? Math.round((tok.expires_at - Date.now()) / 1000) : null;
-        console.log(`  refresh_token    ${tok.refresh_token ? '有' : yellow('没有 —— 要重新授权')}`);
+      console.log(
+        `  客户端凭据       ${credentialsPath()}` +
+          `${credProblem ? yellow(`  ← ${credProblem.replace(/^[^：]*：/, '')}`) : green('  ← 可用')}`
+      );
+      console.log(
+        `  令牌             ${tokenPath()}` +
+          `${t.corrupt ? yellow('  ← 损坏（不是 JSON）') : t.exists ? green('  ← 存在') : dim('  （不存在）')}`
+      );
+      if (t.token) {
+        const left = t.token.expires_at ? Math.round((t.token.expires_at - Date.now()) / 1000) : null;
+        console.log(`  refresh_token    ${t.token.refresh_token ? '有' : yellow('没有 —— 要重新授权')}`);
         console.log(
           `  access_token     ${left === null ? '未知有效期' : left > 0 ? `${left} 秒后过期` : '已过期（用时会自动刷新）'}`
         );
       }
-      console.log(
-        `\n  ${dim('下一步：')}${existsSync(credentialsPath()) ? (tok ? ' --test 打一次真实调用' : ' --auth 走浏览器授权') : ' 先放好客户端凭据 JSON'}\n`
-      );
+
+      // 下一步该做什么，按"最靠前的问题"给，不要给一个做不到的建议
+      let next;
+      if (credProblem) next = ' 先放好客户端凭据 JSON（node scripts/setup.mjs 有步骤）';
+      else if (t.corrupt) next = ' 令牌损坏，删掉它再跑 --auth';
+      else if (!t.token) next = ' --auth 走浏览器授权';
+      else if (!t.token.refresh_token) next = ' 令牌里没有 refresh_token，重新跑 --auth';
+      else next = ' --test 打一次真实调用';
+      console.log(`\n  ${dim('下一步：')}${next}\n`);
     }
   } catch (err) {
     console.error(`\n${yellow('✗')} ${err.message}\n`);
