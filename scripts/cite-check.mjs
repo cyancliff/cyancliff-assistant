@@ -288,6 +288,15 @@ if (!fileArgs.length && !existsSync(scanDir)) {
   process.exit(2);
 }
 
+if (!fileArgs.length && !statSync(scanDir).isDirectory()) {
+  console.error(
+    `--scan 要的是**目录**，但 ${scanDir} 是一个文件。\n\n` +
+      `  想只检查这一个文件，把它作为位置参数传（不要用 --scan）：\n` +
+      `    node scripts/cite-check.mjs ${path.relative(process.cwd(), scanDir)}\n`
+  );
+  process.exit(2);
+}
+
 const files = fileArgs.length
   ? fileArgs
       .map((a) => path.resolve(a))
