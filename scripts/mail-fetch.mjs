@@ -255,15 +255,16 @@ if (isMain && (args.includes('--help') || args.includes('-h'))) {
  * 存在的理由：幂等是这一项能力的硬要求，而真实凭据要等用户配置。
  * 没有这个模式，那条要求就只能等接通之后才能验，中间一直是个假设。
  */
-if (isMain && args.includes('--dummy')) {
-  const mk = (id, subject) => ({
+if (isMain && (args.includes('--dummy') || args.includes('--seed'))) {
+  const seed = args.includes('--seed');
+  const mk = (id, subject, from = '某人 <someone@example.com>', body = null) => ({
     id,
     threadId: `t-${id}`,
     labelIds: ['UNREAD', 'INBOX'],
     payload: {
       mimeType: 'multipart/alternative',
       headers: [
-        { name: 'From', value: '某人 <someone@example.com>' },
+        { name: 'From', value: from },
         { name: 'To', value: 'cyancliff.cn@gmail.com' },
         { name: 'Subject', value: subject },
         { name: 'Date', value: 'Wed, 17 Sep 2026 10:00:00 +0800' },
@@ -271,11 +272,46 @@ if (isMain && args.includes('--dummy')) {
       parts: [
         {
           mimeType: 'text/plain',
-          body: { data: Buffer.from(`这是 ${subject} 的正文。\n第二行。`, 'utf8').toString('base64url') },
+          body: {
+            data: Buffer.from(
+              body || `这是 ${subject} 的正文。\n第二行。`,
+              'utf8'
+            ).toString('base64url'),
+          },
         },
       ],
     },
   });
+
+  if (seed) {
+    mkdirSync(MAIL_DIR, { recursive: true });
+    const fixtures = [
+      mk(
+        '__seed-001',
+        '关于下周组会的时间',
+        '张三 <zhangsan@example.com>',
+        '你好，\n\n下周组会想改到周三下午三点，你那边方便吗？\n如果不行，周四上午也可以。\n\n谢谢'
+      ),
+      mk(
+        '__seed-002',
+        '论文格式的两处问题',
+        '李老师 <li@example.edu.cn>',
+        '小张：\n\n你发来的稿子我看了，有两处格式要改：\n1. 三线表的表头字号\n2. 参考文献的标点\n\n改完再发我。'
+      ),
+    ];
+    const seedSeen = loadSeen();
+    const r = applyMessages(fixtures, seedSeen, {
+      writeFile: (id, md) => writeFileSync(path.join(MAIL_DIR, `${id}.md`), md, 'utf8'),
+    });
+    saveSeen(seedSeen);
+    console.log(`\n${green('✓')} 已写入 ${r.fresh.length} 封合成邮件到 ${dim(MAIL_DIR)}`);
+    for (const id of r.fresh) console.log(`    ${id}`);
+    console.log(`\n  ${dim('试下游：')}`);
+    console.log(`    node scripts/mail-draft.mjs --list`);
+    console.log(`    node scripts/mail-draft.mjs __seed-001 --template`);
+    console.log(`\n  ${dim('清理：删掉 data/mail/__seed-*.md，并从 seen.json 去掉对应键。')}\n`);
+    process.exit(0);
+  }
 
   const tmp = path.join(DATA_ROOT, 'data', 'mail', '__dummy-test');
   const files = new Map();

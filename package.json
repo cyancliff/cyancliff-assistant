@@ -9,7 +9,8 @@
     "notify": "node scripts/notify.mjs",
     "find": "node scripts/find-quote.mjs",
     "mail:fetch": "node scripts/mail-fetch.mjs",
-    "mail:auth": "node scripts/gmail-auth.mjs"
+    "mail:auth": "node scripts/gmail-auth.mjs",
+    "mail:draft": "node scripts/mail-draft.mjs"
   },
   "engines": {
     "node": ">=22.12.0"
