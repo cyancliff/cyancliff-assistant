@@ -11,7 +11,8 @@
     "mail:fetch": "node scripts/mail-fetch.mjs",
     "mail:auth": "node scripts/gmail-auth.mjs",
     "mail:draft": "node scripts/mail-draft.mjs",
-    "workflow": "node scripts/workflow.mjs"
+    "workflow": "node scripts/workflow.mjs",
+    "setup": "node scripts/setup.mjs"
   },
   "engines": {
     "node": ">=22.12.0"

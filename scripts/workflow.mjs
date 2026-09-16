@@ -599,9 +599,37 @@ if (isMain) {
 
   // ── mail:prepare ──
   if (cmd === 'mail:prepare') {
+    // 前置检查：凭据不全时**先说清缺什么、去哪儿拿**，
+    // 而不是让流程跑到取信那一步才抛一个指向错误方向的错。
+    // （实测：缺客户端凭据时报的是"先跑 --auth"，而 --auth 自己也跑不了 ——
+    //   因为客户端凭据根本还没放。）
+    const missing = [];
+    if (!existsSync(credentialsPath())) missing.push('Gmail API 凭据');
+    if (!readToken()) missing.push('Gmail 授权令牌');
+    if (!findApiKey()) missing.push('模型密钥');
+    if (!getEnv('FEISHU_WEBHOOK_URL')) missing.push('飞书 webhook');
+
+    // 前两项是硬阻塞：没有它们连信都取不到。
+    // 模型密钥和飞书缺了只影响一部分，不该拦住整个流程。
+    const hardBlocked = missing.includes('Gmail API 凭据') || missing.includes('Gmail 授权令牌');
+
+    if (missing.length) console.log(`\n${yellow('还差这些配置：')} ${missing.join('、')}\n`);
+    if (hardBlocked) {
+      console.error(`${red('✗')} 取不了信，流程走不下去。\n`);
+      console.error(`  看每一项怎么补：${bold('node scripts/setup.mjs')}\n`);
+      process.exit(2);
+    }
+    if (missing.includes('模型密钥')) {
+      console.log(dim('  没有模型密钥 —— 拟稿那一步会失败。想先看流程用合成数据：'));
+      console.log(dim('    node scripts/mail-fetch.mjs --seed && node scripts/mail-draft.mjs <id> --template\n'));
+    }
+    if (missing.includes('飞书 webhook')) {
+      console.log(dim('  没有飞书 webhook —— 草稿会写在本机，但推不到手机。\n'));
+    }
+
     const ports = realPorts();
     const query = getEnv('GMAIL_QUERY') || 'is:unread';
-    console.log(`\n${bold('取信 → 拟稿 → 推送')}  ${dim(query)}${dryRun ? dim('  (dry-run)') : ''}\n`);
+    console.log(`${bold('取信 → 拟稿 → 推送')}  ${dim(query)}${dryRun ? dim('  (dry-run)') : ''}\n`);
     try {
       const r = await runMailWorkflow({ ports, query, limit, dryRun });
       for (const s of r.steps) {
