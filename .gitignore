@@ -1,0 +1,36 @@
+# ── 私有仓：绝不外传 ─────────────────────────────────────────
+# Personal Memory/ 是一个**独立的 git 仓库**（有自己的 .git），
+# 里面是个人数据：记忆、资料原件、凭据。
+#
+# 本仓库（公开）靠这一行把它挡在版本控制之外。注意这**不只是**省事：
+# 没有这一行，外层 git 会把内层当成 gitlink（git 自己的警告叫
+# "embedded git repository"）记进去，推上去就是一条指向不存在提交的死链。
+#
+# 验证方式（改完这几行务必跑一次）：
+#   git check-ignore -q "Personal Memory"; if ($LASTEXITCODE -eq 0) { "已忽略" }
+# 不要看 git check-ignore 的文本输出 —— 它只报第一条匹配，会骗人。
+Personal Memory/
+
+# ── 资料目录 ─────────────────────────────────────────────────
+# 原件不进版本管理，转换出来的 .md 进。
+# 注意写 `library/*` 而不是 `library/`：`library/` 是目录模式，
+# git 连遍历都不进去，后面任何 `!` 都无效。这是 .gitignore 最常见的坑。
+library/*
+!library/*.md
+*.redact.json
+
+# ── 依赖与构建 ───────────────────────────────────────────────
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+dist/
+.output/
+
+# ── 编辑器与系统 ─────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db

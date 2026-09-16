@@ -1,0 +1,13 @@
+{
+  "name": "cyancliff-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "把文档变成可引用、可核验的 Markdown",
+  "scripts": {
+    "cite:check": "node scripts/cite-check.mjs"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}

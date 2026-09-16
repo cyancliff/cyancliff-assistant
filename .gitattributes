@@ -1,0 +1,13 @@
+# 换行符统一用 LF。
+#
+# 本机 git 开了 core.autocrlf，不显式声明的话 checkout 会把工作区文件
+# 全部转成 CRLF，diff 里全是噪音。与 CyanCliff Web 保持一致。
+* text=auto eol=lf
+
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.ico  binary
+*.pdf  binary
