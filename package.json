@@ -5,7 +5,9 @@
   "type": "module",
   "description": "把文档变成可引用、可核验的 Markdown",
   "scripts": {
-    "cite:check": "node scripts/cite-check.mjs"
+    "cite:check": "node scripts/cite-check.mjs",
+    "notify": "node scripts/notify.mjs",
+    "find": "node scripts/find-quote.mjs"
   },
   "engines": {
     "node": ">=22.12.0"
