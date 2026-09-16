@@ -184,27 +184,54 @@ def convert(pdf_path: Path, out_path: Path) -> dict:
             if dict_block is None:
                 continue
 
-            rows, max_size, dominant_font = [], 0.0, ""
+            rows, max_size = [], 0.0
+            raw_fonts: Counter[str] = Counter()
             for line in dict_block.get("lines", []):
-                text, size, font = line_text(line)
+                text, size, _base = line_text(line)
                 if text:
                     rows.append(text)
                     if size > max_size:
-                        max_size, dominant_font = size, font
+                        max_size = size
+                # 用**原始**字体名，不用 line_text 剥过后缀的基础名 ——
+                # 粗体信息在 "-Bold"/"-Medi" 这些后缀里，剥掉就判不出来了。
+                for sp in line.get("spans", []):
+                    if sp["text"].strip() and sp["size"] >= TINY:
+                        raw_fonts[sp["font"]] += len(sp["text"])
             if not rows:
                 continue
+            dominant_font = raw_fonts.most_common(1)[0][0] if raw_fonts else ""
 
             joined = join_block(rows)
             if not joined:
                 continue
 
-            # 标题判据：明显更大的字号，且不是正文那套字体。
-            # 只看字号会把公式里的 h 也当成标题（同字号、不同字体族）。
-            is_heading = (
+            # 标题判据：**两个条件取或**，因为排版良好的文档和 OCR 文档
+            # 用的机制不一样，只有一个条件必然漏掉其中一种。
+            #
+            #   1. 字号明显不同（≥1.3 倍或 +3pt）—— 覆盖 OCR 文档。
+            #      OCR 会把所有文字标成同一个字体名，字体信息没用，
+            #      但标题字号会明显大于正文。实测 1982 那份标题 14.5–16.6pt、
+            #      正文 6.5–8.9pt。
+            #   2. 字号略大（≥+1.5pt）**且字体族不同** —— 覆盖排版良好的文档。
+            #      实测 Transformer 那份标题只比正文大 2pt（12 vs 10），
+            #      但用的是粗体族，靠字号区分不出来。
+            #
+            # 为什么**不**加"小于正文 = 脚注/页码"：页码和脚注会被判成 `#` 标题，
+            # 比不识别更糟 —— 标题层级错了会污染引用锚点。宁可少认，不可错认。
+            heading_by_size = max_size >= max(body_size * 1.3, body_size + 3.0)
+            # "字体族不同"只在那个字体**确实是强调体**时才算数。
+            # 否则 OCR 文档里另一种正文字体（实测 TimeNesRomanPSMT）会被误判成标题。
+            face_is_bold = bool(re.search(r"(bold|black|heavy|medi|semibold)", dominant_font, re.I))
+            heading_by_face = (
                 max_size >= body_size + 1.5
                 and dominant_font
+                and body_font
                 and dominant_font != body_font
-                and len(joined) <= 90
+                and face_is_bold
+            )
+            is_heading = (
+                (heading_by_size or heading_by_face)
+                and len(joined) <= 120
                 and not joined.endswith((".", ",", ";"))
             )
 
