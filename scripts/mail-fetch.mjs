@@ -69,7 +69,7 @@ const query = flagValue('--query') || getEnv('GMAIL_QUERY') || 'is:unread';
  * 只存 id 和一点便于人看的元信息 —— 不存正文，正文在各自的 .md 里。
  * 两边都存会导致"改了哪个才是对的"这种问题。
  */
-function loadSeen() {
+export function loadSeen() {
   if (!existsSync(SEEN_PATH)) return { processed: {} };
   try {
     const j = JSON.parse(readFileSync(SEEN_PATH, 'utf8'));
@@ -84,10 +84,15 @@ function loadSeen() {
   }
 }
 
-function saveSeen(seen) {
+/** 给 workflow.mjs 用的别名 —— 那两个名字更能说明它在读写文件。 */
+export const loadSeenFile = loadSeen;
+
+export function saveSeen(seen) {
   mkdirSync(MAIL_DIR, { recursive: true });
   writeFileSync(SEEN_PATH, JSON.stringify(seen, null, 2), 'utf8');
 }
+
+export const saveSeenFile = saveSeen;
 
 // ── 解析邮件 ──────────────────────────────────────────────────
 function header(msg, name) {

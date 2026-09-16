@@ -181,7 +181,27 @@ function statusOf(draft) {
 }
 
 // ── 主流程 ────────────────────────────────────────────────────
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+/**
+ * 是不是直接运行（而不是被 import）。
+ *
+ * 用 pathname 比较并包 try/catch：`path.resolve` 和 `fileURLToPath` 在
+ * Windows 上的盘符大小写、分隔符可能有差异，裸比较不总是成立；
+ * 而 `node -e` 这类用法下 `process.argv[1]` 可能根本不是一个文件路径。
+ * 判错的后果是 import 时误跑 CLI —— workflow.mjs 会 import 这个文件。
+ *
+ * 更稳的做法是把可复用部分拆成单独模块（见 notify-lib.mjs）。
+ * 这里先用加固的判据，等哪天需要给外部调用的函数变多再拆。
+ */
+function isMainModule() {
+  if (!process.argv[1]) return false;
+  try {
+    return path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+const isMain = isMainModule();
 
 if (!isMain) {
   // 被 import 时只导出上面的函数
