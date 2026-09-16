@@ -26,12 +26,18 @@ docx-to-md.py — 把 Word 文稿转成可检索、可引用的 Markdown
 脱敏发生在**写文件之前**，所以产出里根本不存在原值。
 报告会列出每条规则命中几次 —— 命中 0 次要警惕：可能原文变了，规则失效了。
 
+## 表格
+
+`<w:tbl>` 会渲染成真正的 Markdown 表格（表头取第一行）。
+`gridSpan`（横向合并）按跨列数补出空列 —— 这会让某些列错位，
+**列名与数值的对应关系要抽查**，别默认它对。
+
 ## 会丢什么
 
-  - 图片（只留图注文字，如 `图3-1 面向心智测评的…`）
-  - 表格结构（13 个表格会被压成文本，列对齐丢失）
+  - 图片（只留图注这类文字，图片本身不保留）
   - 公式排版（上下标大概率丢）
   - 页眉页脚、批注、修订痕迹
+  - 纵向合并（vMerge）只保留第一个格子的值，续格是空的
 
 所以产出是**派生品**。原件必须留着。
 """
@@ -97,13 +103,87 @@ def redact(text: str, rules: list[dict], counter: dict) -> str:
     return text
 
 
+# ── 表格 ──────────────────────────────────────────────────────
+
+def build_parent_map(body):
+    """parent map，用来判断一个段落是不是在表格单元格里。"""
+    parents = {}
+    for parent in body.iter():
+        for child in parent:
+            parents[child] = parent
+    return parents
+
+
+def is_in_table(el, parents) -> bool:
+    cur = parents.get(el)
+    while cur is not None:
+        if cur.tag == f"{W}tbl":
+            return True
+        cur = parents.get(cur)
+    return False
+
+
+def cell_text(tc) -> str:
+    """单元格文字。段落之间用空格接，换行会让 Markdown 表格垮掉。"""
+    chunks = []
+    for p in tc.iter(f"{W}p"):
+        t = "".join(x.text or "" for x in p.iter(f"{W}t")).strip()
+        if t:
+            chunks.append(t)
+    return " ".join(chunks).replace("|", "\\|").strip()
+
+
+def table_plain(tbl) -> list[list[str]]:
+    """表格 → 二维数组，按 gridSpan 补齐被横向合并的格子。"""
+    grid = []
+    for tr in tbl.findall(f"{W}tr"):
+        row = []
+        for tc in tr.findall(f"{W}tc"):
+            span = 1
+            tcPr = tc.find(f"{W}tcPr")
+            if tcPr is not None:
+                gs = tcPr.find(f"{W}gridSpan")
+                if gs is not None:
+                    try:
+                        span = max(1, int(gs.get(f"{W}val", "1")))
+                    except ValueError:
+                        span = 1
+            row.append(cell_text(tc))
+            row.extend([""] * (span - 1))
+        grid.append(row)
+    return grid
+
+
+def render_table(grid: list[list[str]], index: int) -> list[str]:
+    """渲染成 Markdown 表格。
+
+    表头取第一行 —— 论文里的三线表基本都这样。行宽不一致时补空格，
+    因为 Markdown 表格对列数敏感，缺列会把后面的行错位。
+    """
+    width = max((len(r) for r in grid), default=0)
+    if width == 0:
+        return []
+    norm = [r + [""] * (width - len(r)) for r in grid]
+
+    out = [f"<!-- 表 {index} -->", ""]
+    out.append("| " + " | ".join(norm[0]) + " |")
+    out.append("|" + "---|" * width)
+    for row in norm[1:]:
+        out.append("| " + " | ".join(row) + " |")
+    out.append("")
+    return out
+
+
 def convert(src: Path, out: Path, rules: list[dict]) -> dict:
     with zipfile.ZipFile(src) as z:
         xml = z.read("word/document.xml").decode("utf-8")
 
-    body = ET.fromstring(xml).find(f"{W}body")
+    root = ET.fromstring(xml)
+    body = root.find(f"{W}body")
     if body is None:
         sys.exit(f"读不出 word/document.xml 的 body：{src}")
+
+    parents = build_parent_map(body)
 
     hits: dict[str, int] = {}
     parts = [
@@ -115,14 +195,31 @@ def convert(src: Path, out: Path, rules: list[dict]) -> dict:
         parts.append(f"<!-- 已脱敏: {', '.join(r['name'] for r in rules)} -->")
     parts.append("")
 
-    headings = captions = tables = 0
+    headings = captions = 0
+    tables = 0
 
-    for p in body.iter(f"{W}p"):
-        style = para_style(p)
+    # 按文档顺序走 body 的直接子元素。表格在 body 这一层，
+    # 段落可能在表格单元格里 —— 后者由 render_table 一并处理。
+    for el in body:
+        tag = el.tag
+
+        if tag == f"{W}tbl":
+            grid = table_plain(el)
+            if any(any(c for c in r) for r in grid):
+                tables += 1
+                parts.extend(render_table(grid, tables))
+            continue
+
+        if tag != f"{W}p":
+            continue
+        if is_in_table(el, parents):
+            continue
+
+        style = para_style(el)
         if style in STYLE_SKIP:
             continue
 
-        text = para_text(p)
+        text = para_text(el)
         if not text:
             continue
         text = redact(text, rules, hits)
@@ -144,21 +241,13 @@ def convert(src: Path, out: Path, rules: list[dict]) -> dict:
             parts.append(text)
         parts.append("")
 
-        # 表格：单独抽成一段，标注丢了多少结构
-        for tbl in p.iter(f"{W}tbl"):
-            tables += 1
-
-    table_count = len(list(body.iter(f"{W}tbl")))
-    if table_count:
-        parts.append(f"<!-- 本文档含 {table_count} 个表格，结构未保留 -->")
-
     out.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
 
     return {
         "out_lines": len(out.read_text(encoding="utf-8").splitlines()),
         "headings": headings,
         "captions": captions,
-        "tables": table_count,
+        "tables": tables,
         "drawings": len(list(body.iter(f"{W}drawing"))),
         "hits": hits,
     }
@@ -185,8 +274,11 @@ def main() -> int:
     stats = convert(args.docx, out, rules)
 
     print(f"✓ {args.docx.name} → {out.name}")
-    print(f"  md {stats['out_lines']} 行   标题 {stats['headings']}   图注/表注 {stats['captions']}")
-    print(f"  原始文档含 {stats['tables']} 个表格、{stats['drawings']} 张图 —— **结构未保留**")
+    print(f"  md {stats['out_lines']} 行   标题 {stats['headings']}   表格 {stats['tables']}")
+    print(f"  图片 {stats['drawings']} 张 —— 只留图注文字，图片本身不保留")
+    if stats["tables"]:
+        print("  表格已渲染成 Markdown。注意 gridSpan（横向合并）会补出空列，")
+        print("  列名与数值的对应关系要抽查；行数统计以 md 为准。")
 
     if rules:
         print()
@@ -199,8 +291,8 @@ def main() -> int:
     print()
     print("  这是派生品。请在条目文件里记录：")
     print(f"    转换: python-docx-xml @ {date.today().isoformat()}")
-    print("    保真度: 表格结构未保留、图片只留图注、公式上下标可能丢失")
-    print("    可引用: 原文（正文）／仅页码（表格、公式）")
+    print("    保真度: 表格已渲染（gridSpan 会补空列）、图片只留图注、公式上下标可能丢失")
+    print("    可引用: 原文（正文、表格）／公式需回原件核对")
     print()
     print("  用完请把脱敏规则文件从 data/ 里删掉或留在本地：")
     print("    它记录了被脱敏的原值，**不要提交**。")
