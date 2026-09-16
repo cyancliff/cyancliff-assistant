@@ -7,7 +7,9 @@
   "scripts": {
     "cite:check": "node scripts/cite-check.mjs",
     "notify": "node scripts/notify.mjs",
-    "find": "node scripts/find-quote.mjs"
+    "find": "node scripts/find-quote.mjs",
+    "mail:fetch": "node scripts/mail-fetch.mjs",
+    "mail:auth": "node scripts/gmail-auth.mjs"
   },
   "engines": {
     "node": ">=22.12.0"
