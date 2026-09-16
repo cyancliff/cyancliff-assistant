@@ -13,7 +13,9 @@
     "mail:draft": "node scripts/mail-draft.mjs",
     "workflow": "node scripts/workflow.mjs",
     "setup": "node scripts/setup.mjs",
-    "test:credentials": "node scripts/test-credentials.mjs"
+    "test:credentials": "node scripts/test-credentials.mjs",
+    "test:pipeline": "node scripts/test-pipeline.mjs",
+    "test": "node scripts/test-pipeline.mjs && node scripts/test-credentials.mjs && node scripts/mail-fetch.mjs --dummy && node scripts/workflow.mjs --self-test"
   },
   "engines": {
     "node": ">=22.12.0"

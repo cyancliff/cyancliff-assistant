@@ -143,7 +143,14 @@ function formatAddress(v) {
   return (v || '').replace(/\s+/g, ' ').trim();
 }
 
-function messageToMarkdown(msg) {
+/**
+ * 把一封 Gmail message 对象渲染成 markdown。
+ *
+ * 导出是为了能被单独测（scripts/test-pipeline.mjs）——
+ * 它是这一层里最容易出错的一段：MIME 是多层嵌套的，
+ * text/plain 和 text/html 谁先谁后、只有 HTML 时怎么办，都是实测踩过的。
+ */
+export function messageToMarkdown(msg) {
   const body = extractBody(msg.payload);
   const text = body.text || (body.html ? htmlToText(body.html) : '');
   const from = formatAddress(header(msg, 'From'));
