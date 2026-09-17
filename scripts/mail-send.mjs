@@ -33,6 +33,10 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gmailFetch, getEnv, DATA_ROOT, readToken, credentialsPath } from './gmail-auth.mjs';
+import { restartIfNeeded } from './proxy.mjs';
+
+// 联网脚本：需要时先带代理开关重启一次自己（见 proxy.mjs 顶部说明）
+restartIfNeeded();
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');

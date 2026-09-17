@@ -29,6 +29,10 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getEnv, DATA_ROOT, ENV_PATH } from './gmail-auth.mjs';
+import { restartIfNeeded } from './proxy.mjs';
+
+// 联网脚本：拟稿要调模型，模型服务在墙外时要走代理（见 proxy.mjs 顶部说明）
+restartIfNeeded();
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');

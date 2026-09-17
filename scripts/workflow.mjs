@@ -45,6 +45,10 @@ import { sendNotify } from './notify-lib.mjs';
 import { parseMailFile, buildPrompt, templateDraft, findApiKey, callModel, renderDraft, draftPath, historyFrom, extractEmail } from './mail-draft.mjs';
 import { readDraft, readConfirm, writeConfirm, setFrontmatter, bodyHash } from './mail-send.mjs';
 import { applyMessages, loadSeenFile, saveSeenFile } from './mail-fetch.mjs';
+import { restartIfNeeded } from './proxy.mjs';
+
+// 联网脚本：这条流程要调 Gmail 和模型（见 proxy.mjs 顶部说明）
+restartIfNeeded();
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');

@@ -26,6 +26,11 @@
 
 import { readFileSync, existsSync } from 'node:fs';
 import { sendNotify, getEnv, truncateBody, maskWebhook, ENV_PATH } from './notify-lib.mjs';
+import { restartIfNeeded } from './proxy.mjs';
+
+// 飞书在国内通常不需要代理，但走一遍判断没有代价
+// （没有代理配置时 restartIfNeeded 立刻返回，不重启）
+restartIfNeeded();
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = (n) => (s) => (useColor ? `\x1b[${n}m${s}\x1b[0m` : s);

@@ -36,6 +36,10 @@ import {
   credentialsPath,
   tokenPath,
 } from './gmail-auth.mjs';
+import { restartIfNeeded } from './proxy.mjs';
+
+// 联网脚本：需要时先带代理开关重启一次自己（见 proxy.mjs 顶部说明）
+restartIfNeeded();
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = (n) => (s) => (useColor ? `\x1b[${n}m${s}\x1b[0m` : s);
