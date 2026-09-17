@@ -502,6 +502,14 @@ group('6. 核心编排');
     ...over,
   });
 
+  // 点「确认发送」之后，真正干活的是**后台那段** —— 因为飞书要求回调 3 秒内响应，
+  // 而真发信要 spawn 子进程 + 走网络。core 把它作为 `done` 返回。
+  // 正式运行忽略它；测试必须 await 它才能断言结果。
+  const confirmResult = async (core, over = {}) => {
+    const r = await core.handleCardAction(cardEvt(over));
+    return r.done ? await r.done : r;
+  };
+
   {
     const p = fakePorts();
     const core = createCore({ ports: p, ownerOpenId: OWNER });
@@ -515,7 +523,7 @@ group('6. 核心编排');
   {
     const p = fakePorts({ drafts: { d1: { id: 'd1', fm: { to: 'a@b.com', subject: 's' }, body: 'b' } } });
     const core = createCore({ ports: p, ownerOpenId: OWNER });
-    const r = await core.handleCardAction(cardEvt());
+    const r = await confirmResult(core);
 
     chk('主人点确认 → 真的发了', r.sent === true && named(p.calls, 'sendDraft').length === 1);
     // 注意：named() 返回的是 {name, args}，取值要走 .args ——
@@ -526,10 +534,42 @@ group('6. 核心编排');
     chk('发完把卡片改成「已发送」', /已发送/.test(cardText(lastCardOf(p.calls, 'updateCard'))));
   }
   {
+    // ★ 回调必须在**发送完成之前**就返回 ——
+    //   飞书要求 3 秒内响应，而真发信要 spawn 子进程 + 走网络。
+    //   同步等待 = 超时 → 飞书重推 → 卡片被重置
+    //   （实测踩过：邮件发出去了，但卡片一直不变绿）。
+    //
+    //   注意断言的是"没等它完成"，不是"没开始"：
+    //   async IIFE 会同步执行到第一个 await 之前，所以"已启动"是正常的。
+    //   第一版我写成断言"没开始"，结果测试红了 —— 而红的原因是断言错，不是代码错。
+    let sendFinished = false;
+    const p = fakePorts({
+      drafts: { d1: { id: 'd1', fm: { to: 'a@b.com', subject: 's' }, body: 'b' } },
+      overrides: {
+        sendDraft: async (id) => {
+          p.calls.push({ name: 'sendDraft', args: [id] });
+          await new Promise((r) => setTimeout(r, 50)); // 假装在走网络
+          sendFinished = true;
+          return { ok: true, messageId: 'gm_1' };
+        },
+      },
+    });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+
+    const r = await core.handleCardAction(cardEvt());
+
+    chk('★ 回调返回时发送还没完成（不然就超 3 秒了）', sendFinished === false);
+    chk('但已经先把卡片改成了「正在发送」', /正在发送/.test(cardText(lastCardOf(p.calls, 'updateCard'))));
+
+    await r.done;
+    chk('await done 之后发送才完成', sendFinished === true);
+    chk('完成后卡片变成「已发送」', /已发送/.test(cardText(lastCardOf(p.calls, 'updateCard'))));
+  }
+  {
     // 已经发过的草稿：再点也不发
     const p = fakePorts({ drafts: { d1: { id: 'd1', fm: { sent_at: '2026-01-01T00:00:00Z' }, body: 'b' } } });
     const core = createCore({ ports: p, ownerOpenId: OWNER });
-    const r = await core.handleCardAction(cardEvt());
+    const r = await confirmResult(core);
 
     chk('已发送的草稿 → 不重复发', r.acted === false && named(p.calls, 'sendDraft').length === 0);
     chk('已发送的草稿 → 连锁都不去拿', named(p.calls, 'withSendLock').length === 0);
@@ -547,7 +587,7 @@ group('6. 核心编排');
       },
     });
     const core = createCore({ ports: p, ownerOpenId: OWNER });
-    const r = await core.handleCardAction(cardEvt());
+    const r = await confirmResult(core);
 
     chk('锁内重读发现已发出 → 不重复发', r.reason === 'already-sent' && named(p.calls, 'sendDraft').length === 0);
   }
@@ -566,7 +606,8 @@ group('6. 核心编排');
       },
     });
     const core = createCore({ ports: p, ownerOpenId: OWNER });
-    const [a, b] = await Promise.all([core.handleCardAction(cardEvt()), core.handleCardAction(cardEvt())]);
+    const [ra, rb] = await Promise.all([core.handleCardAction(cardEvt()), core.handleCardAction(cardEvt())]);
+    const [a, b] = [await ra.done, await rb.done];
 
     chk('连点两次 → 只发一封', named(p.calls, 'sendDraft').length === 1);
     chk('连点两次 → 第二次拿到 busy', [a.reason, b.reason].includes('busy'));
@@ -605,7 +646,7 @@ group('6. 核心编排');
       overrides: { sendDraft: async () => ({ ok: false, reason: 'Gmail 401' }) },
     });
     const core = createCore({ ports: p, ownerOpenId: OWNER });
-    const r = await core.handleCardAction(cardEvt());
+    const r = await confirmResult(core);
     chk('发送失败 → 返回 sent:false 并带上原因', r.sent === false && r.reason === 'Gmail 401');
     chk('发送失败 → 卡片上写了原因', /Gmail 401/.test(cardText(lastCardOf(p.calls, 'updateCard'))));
   }
@@ -616,7 +657,7 @@ group('6. 核心编排');
       overrides: { updateCard: async () => { throw new Error('卡片服务 500'); } },
     });
     const core = createCore({ ports: p, ownerOpenId: OWNER });
-    const r = await core.handleCardAction(cardEvt());
+    const r = await confirmResult(core);
     chk('更新卡片失败不影响发送结果', r.sent === true && named(p.calls, 'sendDraft').length === 1);
   }
 }

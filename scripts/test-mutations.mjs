@@ -142,6 +142,13 @@ const MUTATIONS = [
     replace: '    for (const fn of []) {',
     why: '所有退出的兜底清理都失效（发送锁就是这么漏的）—— 只有子进程测试能发现',
   },
+  {
+    name: '核心：确认时同步等发信完成',
+    file: 'feishu-core.mjs',
+    find: "    return { decision: DECISION.ALLOW, acted: true, command: 'confirm', id, pending: true, done };",
+    replace: "    return { ...(await done), pending: false, done: Promise.resolve() };",
+    why: '超飞书的 3 秒回调限制 → 重推 → 卡片被重置（实测踩过：邮件发出去了但卡片不变绿）',
+  },
 ];
 
 // ── 前置：工作区必须干净 ──────────────────────────────────────

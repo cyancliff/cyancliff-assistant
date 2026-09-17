@@ -268,6 +268,21 @@ export function createCore({ ports, ownerOpenId = '', now = () => new Date().toI
       return { decision: DECISION.ALLOW, acted: false, command: 'confirm', reason: 'already-sent' };
     }
 
+    // ★ 先把"收到了"告诉用户，然后立刻返回 —— 远在 3 秒之内。
+    //   真发信要 spawn 子进程 + 走网络（2 秒起步），同步做会超时 → 飞书重推 → 卡片被重置。
+    //   计划 §5 写对了这一点，实现时写成了同步的，踩过才知道。
+    await safeUpdateCard(evt.messageId, {
+      title: '正在发送…',
+      template: 'orange',
+      lines: [
+        `**收件人**　${before.fm.to || '(无)'}`,
+        `**主题**　${before.fm.subject || '(无)'}`,
+        '',
+        '_发完这张卡片会再变一次。_',
+      ],
+    });
+
+    const done = (async () => {
     const locked = await ports.withSendLock(id, async () => {
       // 锁内重读：等锁的这段时间里，另一个回调可能已经把它发掉了
       const draft = ports.readDraft(id);
@@ -279,6 +294,7 @@ export function createCore({ ports, ownerOpenId = '', now = () => new Date().toI
     });
 
     if (!locked.acquired) {
+      log(`确认 ${id} → 忙（${locked.holder || '另一个回调'}）`);
       await safeUpdateCard(evt.messageId, {
         title: '正在发送中',
         template: 'orange',
@@ -290,6 +306,7 @@ export function createCore({ ports, ownerOpenId = '', now = () => new Date().toI
     const r = locked.value || {};
 
     if (r.reason === 'already-sent') {
+      log(`确认 ${id} → 已被发过（${r.sentAt || '刚才'}）`);
       await safeUpdateCard(evt.messageId, {
         title: '已经发过了',
         template: 'grey',
@@ -299,6 +316,9 @@ export function createCore({ ports, ownerOpenId = '', now = () => new Date().toI
     }
 
     if (r.ok) {
+      // 发信结果**必须记日志**。不记的话出问题时终端上一个字都没有，
+      // 只能去翻草稿的 frontmatter —— 这一条也是踩过才加的。
+      log(`确认 ${id} → 已发送 ${r.messageId || ''}`);
       await safeUpdateCard(evt.messageId, {
         title: '已发送',
         template: 'green',
@@ -313,13 +333,19 @@ export function createCore({ ports, ownerOpenId = '', now = () => new Date().toI
       return { decision: DECISION.ALLOW, acted: true, command: 'confirm', id, sent: true };
     }
 
-    // 失败：卡片上写清原因，别只留在终端里
+    log(`确认 ${id} → 没发出去：${r.reason || '未知'}`);
     await safeUpdateCard(evt.messageId, {
       title: '没发出去',
       template: 'red',
       lines: [`**原因**　${r.reason || '未知'}`, '', '_草稿没有被标成已发送，可以重试。_'],
     });
     return { decision: DECISION.ALLOW, acted: true, command: 'confirm', id, sent: false, reason: r.reason };
+    })();
+
+    // 后台那段不能有未捕获的拒绝 —— 那会把进程带崩，而用户只看到"没反应"
+    done.catch((e) => log(`确认 ${id} 的后台任务抛错：${e.message}`));
+
+    return { decision: DECISION.ALLOW, acted: true, command: 'confirm', id, pending: true, done };
   }
 
   // ── 小工具 ──────────────────────────────────────────────────
