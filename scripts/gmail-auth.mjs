@@ -231,29 +231,74 @@ export async function getAccessToken() {
 }
 
 /** 带认证的 Gmail API 调用。 */
-export async function gmailFetch(urlPath, init = {}) {
-  const token = await getAccessToken();
-  const res = await fetch(
-    urlPath.startsWith('http') ? urlPath : `https://gmail.googleapis.com/gmail/v1${urlPath}`,
-    {
-      ...init,
-      headers: {
-        ...(init.headers || {}),
-        Authorization: `Bearer ${token}`,
-      },
+/**
+ * 带认证的 Gmail API 调用，**带瞬时失败重试**。
+ *
+ * 重试是实测需要的：扫描邮件时偶尔出现
+ * ``第 14 封读取失败：fetch failed`` —— 走代理时的瞬时失败，
+ * 同一个请求重试一次就好了。不重试的话大批量扫描会零星缺几封，
+ * 而缺哪几封是随机的，很难察觉。
+ *
+ * ## 只重试这些情况
+ *
+ *   fetch 抛异常（网络/代理瞬时问题）
+ *   429（限流）
+ *   5xx（服务端瞬时错误）
+ *
+ * ## **不**重试这些
+ *
+ *   401 / 403 —— 认证或权限问题，重试没用（密钥失效、API 未启用）
+ *   404 —— 资源不存在
+ *   400 —— 请求本身有问题
+ *
+ * 重试一个不会自己好的错误只是在浪费时间，还会让人以为是慢而不是错。
+ */
+export async function gmailFetch(urlPath, init = {}, { retries = 2, baseDelayMs = 400 } = {}) {
+  const url = urlPath.startsWith('http') ? urlPath : `https://gmail.googleapis.com/gmail/v1${urlPath}`;
+  let lastErr;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      // 退避：400ms、800ms。够避开瞬时抖动，又不会让一次扫描变得很慢。
+      await new Promise((r) => setTimeout(r, baseDelayMs * 2 ** (attempt - 1)));
     }
-  );
-  const text = await res.text();
-  let json = null;
-  try {
-    json = text ? JSON.parse(text) : null;
-  } catch {
-    /* 保留原文用于报错 */
+
+    let res;
+    try {
+      const token = await getAccessToken();
+      res = await fetch(url, {
+        ...init,
+        headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` },
+      });
+    } catch (err) {
+      lastErr = new Error(`Gmail API 请求发不出去：${err.message}`);
+      // 网络层失败 —— 值得重试
+      if (attempt < retries) continue;
+      throw lastErr;
+    }
+
+    const text = await res.text();
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      /* 保留原文用于报错 */
+    }
+
+    if (res.ok) return json;
+
+    const msg = `Gmail API ${res.status}：${json?.error?.message || text.slice(0, 300)}`;
+
+    // 只有可能自己好的才重试
+    const retryable = res.status === 429 || res.status >= 500;
+    if (retryable && attempt < retries) {
+      lastErr = new Error(msg);
+      continue;
+    }
+    throw new Error(msg);
   }
-  if (!res.ok) {
-    throw new Error(`Gmail API ${res.status}：${json?.error?.message || text.slice(0, 300)}`);
-  }
-  return json;
+
+  throw lastErr ?? new Error('Gmail API 调用失败');
 }
 
 // ── 首次授权：本地回环 + PKCE ─────────────────────────────────
