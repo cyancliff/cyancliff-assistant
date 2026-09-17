@@ -247,6 +247,83 @@ export function busyMessage(lock) {
 }
 
 /**
+ * 把邮件头里的非 ASCII 文本编成 RFC 2047。
+ *
+ * ── 为什么需要它 ────────────────────────────────────────────────
+ * MIME 头里**不能直接放非 ASCII 字符**。正文没问题（`Content-Type` 里声明了
+ * `charset="UTF-8"`），但头是另一回事：非 ASCII 必须编成 `=?UTF-8?B?...?=`。
+ *
+ * 这是踩过才加的。给自测邮件写了个中文主题，收到时变成
+ *
+ *     Re: Ã©Â£ÂžÃ¤Â¹Â¦ bot ...
+ *
+ * 原文是「Re: 飞书 bot 发送链路测试」—— 被双重编码了。
+ * 有些客户端会猜、有些不猜；给真人回信时主题就会花掉。
+ * （发现它纯属偶然：`/取信` 扫到的那封测试邮件正好是自己发的。）
+ *
+ * ── 为什么按字符切块而不是按词 ──────────────────────────────────
+ * RFC 2047 规定相邻两个编码词之间的空白会被解码器**吃掉**。
+ * 所以整串（含空格）必须都在编码词里面，不能把空格留在外面。
+ * 按字符切、每块单独编，解码后拼起来才和原文一模一样。
+ */
+export function encodeHeaderValue(value) {
+  const s = String(value == null ? '' : value);
+  // 纯 ASCII 且无控制字符 —— 原样用，没必要套一层编码（也更可读）
+  if (!/[^\x20-\x7e]/.test(s)) return s;
+
+  const chunks = [];
+  let buf = [];
+  let bytes = 0;
+  for (const ch of s) {
+    const n = Buffer.byteLength(ch, 'utf8');
+    // 45 字节 → base64 60 字符；加 `=?UTF-8?B?` 与 `?=` 共 12 → 72，在 RFC 的 75 以内
+    if (bytes + n > 45) {
+      chunks.push(buf.join(''));
+      buf = [];
+      bytes = 0;
+    }
+    buf.push(ch);
+    bytes += n;
+  }
+  if (buf.length) chunks.push(buf.join(''));
+
+  return chunks.map((c) => `=?UTF-8?B?${Buffer.from(c, 'utf8').toString('base64')}?=`).join('\r\n ');
+}
+
+/**
+ * 地址头（To/Cc）的编码。
+ *
+ * 与主题不同：**地址本身不能被编码**，只有显示名可以 ——
+ * `=?UTF-8?B?…?= <a@b.com>` 合法；把整个 `名字 <地址>` 编成一坨就不合法了。
+ */
+export function encodeAddress(value) {
+  const s = String(value == null ? '' : value).trim();
+  const m = s.match(/^(.*?)\s*<([^>]+)>\s*$/);
+  if (!m) return s; // 光秃秃一个地址，没什么可编的
+  const name = m[1].replace(/^"(.*)"$/, '$1').trim();
+  return name ? `${encodeHeaderValue(name)} <${m[2]}>` : `<${m[2]}>`;
+}
+
+/**
+ * 组装 MIME。用 base64url 是 Gmail API 的要求。
+ *
+ * 单独抽出来是为了**能测** —— 头编码这种事不测就只能靠发真邮件看，
+ * 而"发出去看结果"恰恰是最慢、最容易漏的验证方式。
+ */
+export function buildMime({ to, subject, body }) {
+  const subj = /^re:/i.test(subject) ? subject : `Re: ${subject}`;
+  return [
+    `To: ${encodeAddress(to)}`,
+    `Subject: ${encodeHeaderValue(subj)}`,
+    'Content-Type: text/plain; charset="UTF-8"',
+    'MIME-Version: 1.0',
+    '',
+    String(body).trim(),
+    '',
+  ].join('\r\n');
+}
+
+/**
  * 解析 `--send` 的输出。**给 bot 用** —— 它 spawn 这个脚本，然后要判断成败。
  *
  * 为什么放在这里而不是调用方：**打印和解析必须一起改。**
@@ -544,16 +621,7 @@ if (!isMain) {
       process.exit(2);
     }
 
-    // 组装 MIME。用 base64url 是 Gmail API 的要求。
-    const mime = [
-      `To: ${to}`,
-      `Subject: ${/^re:/i.test(subject) ? subject : `Re: ${subject}`}`,
-      'Content-Type: text/plain; charset="UTF-8"',
-      'MIME-Version: 1.0',
-      '',
-      draft.body.trim(),
-      '',
-    ].join('\r\n');
+    const mime = buildMime({ to, subject, body: draft.body });
 
     let sent;
     try {

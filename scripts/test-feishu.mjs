@@ -29,6 +29,7 @@ import { DECISION, decideMessage, decideCardAction, replyFor, allowsAction } fro
 
 import {
   acquireSendLock, releaseSendLock, sendLockPath, busyMessage, withSendLock, parseSendOutput,
+  encodeHeaderValue, encodeAddress, buildMime,
 } from './mail-send.mjs';
 
 import { createCore } from './feishu-core.mjs';
@@ -660,6 +661,56 @@ group('6. 核心编排');
     const r = await confirmResult(core);
     chk('更新卡片失败不影响发送结果', r.sent === true && named(p.calls, 'sendDraft').length === 1);
   }
+}
+
+// ══ 7. 邮件头编码（RFC 2047）═══════════════════════════════════
+// 放在这个文件里是因为它已经在测 mail-send 的底层函数了。
+// 这一组的存在理由：中文主题原样写进 Subject 头会变成
+// `Re: Ã©Â£ÂžÃ¤Â¹Â¦ bot ...` —— 而那是**发出去之后**才看得见的，
+// 所以必须有能在发之前就抓住它的测试。
+group('7. 邮件头编码（RFC 2047）');
+
+{
+  /** 把编码词解开拼回去 —— 这才是"编码对不对"的唯一证明。 */
+  const decode = (v) => {
+    const parts = [...String(v).matchAll(/=\?UTF-8\?B\?([^?]*)\?=/g)].map((m) =>
+      Buffer.from(m[1], 'base64').toString('utf8')
+    );
+    return parts.length ? parts.join('') : String(v);
+  };
+
+  chk('纯 ASCII 原样通过（不套无谓的编码）', encodeHeaderValue('Hello World') === 'Hello World');
+  chk('ASCII 但含 Re: 前缀也原样', encodeHeaderValue('Re: invoice #2832') === 'Re: invoice #2832');
+
+  const zh = 'Re: 飞书 bot 发送链路测试（收到即通）';
+  const enc = encodeHeaderValue(zh);
+  chk('中文被编码', enc.startsWith('=?UTF-8?B?') && enc.includes('?='));
+  chk('★ 往返一致（含空格 —— 空格留在编码词外面会被解码器吃掉）', decode(enc) === zh);
+  chk('★ 没有残留的裸非 ASCII 字符', !/[^\x20-\x7e\r\n]/.test(enc));
+
+  // 长主题要折成多个编码词，且每个都在 RFC 的 75 字符以内
+  const long = '关于下周组会时间的讨论：' + '很长的中文'.repeat(30);
+  const encLong = encodeHeaderValue(long);
+  const words = encLong.split(/\r\n /);
+  chk('长主题折成多个编码词', words.length > 1);
+  chk('每个编码词都不超过 75 字符（RFC 2047 的硬限制）', words.every((w) => w.length <= 75));
+  chk('★ 长主题往返也一致', decode(encLong) === long);
+
+  // 地址头：只有显示名能编码，地址必须原样
+  chk('地址里只有显示名被编码',
+    encodeAddress('七星海糖 <cyancliff.cn@gmail.com>') ===
+      `${encodeHeaderValue('七星海糖')} <cyancliff.cn@gmail.com>`);
+  chk('光秃秃的地址不动它', encodeAddress('a@b.com') === 'a@b.com');
+  chk('带引号的显示名去引号后再编',
+    encodeAddress('"Someone" <x@y.com>') === `${encodeHeaderValue('Someone')} <x@y.com>`);
+
+  const mime = buildMime({ to: '七星海糖 <me@x.com>', subject: '测试主题', body: '正文' });
+  chk('buildMime 里 Subject 是编过的', /Subject: =\?UTF-8\?B\?/.test(mime));
+  chk('buildMime 里 To 的地址部分没被编码', mime.includes('<me@x.com>'));
+  chk('自动加 Re: 前缀', /Subject: =\?UTF-8\?B\?/.test(mime) && decode(mime.match(/Subject: (.*)/)[1]) === 'Re: 测试主题');
+  chk('已有 Re: 就不重复加', mime.includes('Subject:') &&
+    decode(buildMime({ to: 'a@b.com', subject: 'Re: x', body: 'b' }).match(/Subject: (.*)/)[1]) === 'Re: x');
+  chk('正文按原样进 MIME（它靠 charset 声明，不需要编码）', mime.includes('正文'));
 }
 
 // ══ 结果 ══════════════════════════════════════════════════════

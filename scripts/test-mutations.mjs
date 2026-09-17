@@ -149,6 +149,13 @@ const MUTATIONS = [
     replace: "    return { ...(await done), pending: false, done: Promise.resolve() };",
     why: '超飞书的 3 秒回调限制 → 重推 → 卡片被重置（实测踩过：邮件发出去了但卡片不变绿）',
   },
+  {
+    name: '邮件头：非 ASCII 不做 RFC 2047 编码',
+    file: 'mail-send.mjs',
+    find: "  if (!/[^\\x20-\\x7e]/.test(s)) return s;",
+    replace: '  return s;',
+    why: '中文主题变成 Re: Ã©Â£ÂžÃ¤Â¹Â¦ bot ...（实测踩过；只有发出去才看得见）',
+  },
 ];
 
 // ── 前置：工作区必须干净 ──────────────────────────────────────
