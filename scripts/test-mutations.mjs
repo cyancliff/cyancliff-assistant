@@ -1,0 +1,195 @@
+#!/usr/bin/env node
+/**
+ * test-mutations.mjs — 证明 test-feishu.mjs 的断言真的在检查什么
+ *
+ * ── 为什么需要这个 ──────────────────────────────────────────────
+ * 这个项目里已经五次撞上"断言恒真"：看着像检查、其实两个分支相同，
+ * 或者只检查了报告值没检查实际行为。最近一次就在本文件旁边 ——
+ * 我用 `includes('p')` 检查"按钮里不含正文"，而 `"action":"preview"`
+ * 里本来就有 p，恒真。
+ *
+ * 唯一的发现办法是**故意破坏代码，看测试会不会报**。
+ * 所以把这件事做成脚本，而不是靠"这次我记得手动试一下"。
+ *
+ * ── 安全性 ────────────────────────────────────────────────────
+ * 每个突变都在 try/finally 里还原，并且还原后**逐字节核对**内容一致。
+ * 还原失败会立刻大声报错并停下 —— 绝不留下改坏的文件。
+ * 运行前会检查工作区是否干净（有未提交改动就拒绝跑，免得把正常改动弄丢）。
+ */
+
+import { readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.join(HERE, '..');
+const TEST = path.join(HERE, 'test-feishu.mjs');
+
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const c = (n) => (s) => (useColor ? `\x1b[${n}m${s}\x1b[0m` : String(s));
+const green = c(32), red = c(31), yellow = c(33), dim = c(2), bold = c(1);
+
+/**
+ * 每个突变：把 find 换成 replace，然后**期待测试失败**。
+ * 若测试仍然全绿，说明那条断言是假的 —— 这正是我们要找的东西。
+ */
+const MUTATIONS = [
+  {
+    name: '权限：不检查发送者是不是主人',
+    file: 'feishu-policy.mjs',
+    find: 'if (sender !== owner) return { decision: DECISION.NOT_OWNER, senderOpenId: sender };',
+    replace: 'if (false) return { decision: DECISION.NOT_OWNER, senderOpenId: sender };',
+    why: '谁都能用 bot —— 这是最严重的一种',
+  },
+  {
+    name: '权限：群聊也处理',
+    file: 'feishu-policy.mjs',
+    find: "if (norm(chatType) !== 'p2p') return { decision: DECISION.NOT_DM };",
+    replace: 'if (false) return { decision: DECISION.NOT_DM };',
+    why: '群里任何人都能命令它',
+  },
+  {
+    name: '权限：owner 没配也放行',
+    file: 'feishu-policy.mjs',
+    find: "if (!owner) return { decision: DECISION.CLAIM, senderOpenId: sender };",
+    replace: 'if (!owner) return { decision: DECISION.ALLOW };',
+    why: '默认信任 —— 谁先发消息谁就是主人',
+  },
+  {
+    name: '卡片：按钮不带 callback 行为',
+    file: 'feishu-card.mjs',
+    find: "behaviors: [{ type: 'callback', value }],",
+    replace: 'behaviors: [],',
+    why: '按钮点了没反应 —— 整个交互方案失效',
+  },
+  {
+    name: '卡片：按钮 value 里塞进正文',
+    file: 'feishu-card.mjs',
+    find: 'button({ text: \'确认发送\', value: { action: ACTION.CONFIRM, id }, type: \'primary\' }),',
+    replace: 'button({ text: \'确认发送\', value: { action: ACTION.CONFIRM, id, leak: preview }, type: \'primary\' }),',
+    why: '正文会随卡片往返、进日志',
+  },
+  {
+    name: '卡片：markdown 不转义',
+    file: 'feishu-card.mjs',
+    find: ".replace(/[`*_~[\\]]/g, (ch) => `\\\\${ch}`)",
+    replace: '.replace(/[\\u0000]/g, (ch) => ch)',
+    why: '邮件主题里的 ** 能把卡片排版搅乱，甚至伪造出类似系统提示的块',
+  },
+  {
+    name: '命令：不带斜杠的话也当命令',
+    file: 'feishu-commands.mjs',
+    find: "if (!raw.startsWith('/')) return { kind: 'none' };",
+    replace: "if (false) return { kind: 'none' };",
+    why: '闲聊会被当成命令执行',
+  },
+  {
+    name: '命令：参数不全也当命令',
+    file: 'feishu-commands.mjs',
+    find: `  if (cmd.args.length && args.length === 0) {
+    return { kind: 'help', reason: \`\\\`/\${cmd.name}\\\` 要带参数。用法：\\\`\${usageOf(cmd)}\\\`\` };
+  }`,
+    replace: '  if (false) { /* 突变：不检查参数 */ }',
+    why: '`/稿` 不带 id 会往下走成 undefined',
+  },
+  {
+    name: '锁：拿不到也当拿到了',
+    file: 'mail-send.mjs',
+    find: "    if (ageMs < SEND_LOCK_STALE_MS) {\n      return { acquired: false, reason: 'busy', holder, ageMs };\n    }",
+    replace: '    // 突变：忽略已有锁',
+    why: '并发下会发两封 —— 这正是加锁要防的',
+  },
+  {
+    name: '锁：陈旧的锁不接管',
+    file: 'mail-send.mjs',
+    find: "    rmSync(lock, { force: true }); // 陈旧 → 清掉重来",
+    replace: "    return { acquired: false, reason: 'busy', holder: 'stale-never-cleared' };",
+    why: '进程崩一次就永久卡住，再也发不出去',
+  },
+];
+
+// ── 前置：工作区必须干净 ──────────────────────────────────────
+function assertClean() {
+  const out = execFileSync('git', ['status', '--porcelain', '--', 'scripts'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  }).trim();
+  if (out) {
+    console.error(`\n  ${red('✗')} scripts/ 下有未提交的改动，拒绝跑突变测试（怕把正常改动弄丢）：\n`);
+    console.error(out.split('\n').map((l) => `      ${l}`).join('\n'));
+    console.error(`\n    ${dim('先提交或 stash，再跑。')}\n`);
+    process.exit(2);
+  }
+}
+
+function runTests() {
+  try {
+    execFileSync(process.execPath, [TEST], { cwd: ROOT, stdio: 'pipe' });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, output: `${e.stdout || ''}${e.stderr || ''}` };
+  }
+}
+
+assertClean();
+
+console.log(`\n${bold('突变测试')} ${dim('—— 故意破坏代码，看测试抓不抓得住')}`);
+console.log(dim(`  ${MUTATIONS.length} 个突变\n`));
+
+let caught = 0;
+let missed = [];
+let restoreFailed = [];
+
+for (const m of MUTATIONS) {
+  const file = path.join(HERE, m.file);
+  const original = readFileSync(file, 'utf8');
+
+  if (!original.includes(m.find)) {
+    console.log(`  ${yellow('⚠')} ${m.name}`);
+    console.log(`      ${dim(`找不到要替换的片段 —— 代码变了，这个突变已经过期：`)}`);
+    console.log(`      ${dim(m.file)}`);
+    missed.push({ ...m, reason: 'pattern-not-found' });
+    continue;
+  }
+
+  try {
+    writeFileSync(file, original.replace(m.find, m.replace), 'utf8');
+    const r = runTests();
+
+    if (!r.ok) {
+      caught++;
+      console.log(`  ${green('✓')} 抓住：${m.name}`);
+      console.log(`      ${dim(m.why)}`);
+    } else {
+      missed.push(m);
+      console.log(`  ${red('✗')} 漏掉：${m.name}`);
+      console.log(`      ${dim(`破坏了这一点，测试却全绿 —— 说明没有断言在检查它`)}`);
+      console.log(`      ${dim(m.why)}`);
+    }
+  } finally {
+    writeFileSync(file, original, 'utf8');
+    const back = readFileSync(file, 'utf8');
+    if (back !== original) {
+      restoreFailed.push(m.file);
+      console.log(`  ${red('✗✗')} 还原失败：${m.file} —— 立刻停下`);
+      break;
+    }
+  }
+}
+
+console.log('');
+if (restoreFailed.length) {
+  console.log(`  ${red('✗✗')} 有文件没还原成功，已中止：${restoreFailed.join(', ')}\n`);
+  process.exit(3);
+}
+
+if (missed.length === 0) {
+  console.log(`  ${green('✓')} ${caught}/${MUTATIONS.length} 个突变全部被抓住 —— 断言不是恒真的\n`);
+  process.exit(0);
+} else {
+  console.log(`  ${red('✗')} ${caught}/${MUTATIONS.length} 被抓住，${missed.length} 个漏掉：`);
+  for (const m of missed) console.log(`      ${m.name}`);
+  console.log('');
+  process.exit(1);
+}

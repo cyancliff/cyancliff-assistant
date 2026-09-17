@@ -28,7 +28,7 @@
  * 这道检查防的是"确认的是 A，发出去的是 B"。
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -159,6 +159,97 @@ export function writeConfirm(id, draft, via) {
   };
   writeFileSync(confirmPath(id), JSON.stringify(rec, null, 2), 'utf8');
   return rec;
+}
+
+// ── 发送锁 ────────────────────────────────────────────────────
+//
+// 为什么需要它：`--send` 分支读 `sent_at` 判断"发过没有"，
+// 而 `sent_at` 是**发完之后**才写的。中间那段时间是敞开的。
+//
+// 命令行时代无所谓 —— 一次命令一个进程，跑完就退了。
+// 但 bot 会在**同一进程里并发**处理回调（飞书超时会重推同一条），
+// 两次都能通过那个判断，于是**真的会发两封**。
+//
+// 锁跨进程：CLI 与 bot 同时发同一封，也只有一个能进。
+// 陈旧的锁（进程被 kill 掉了）超过 STALE 就当无效，免得永久卡住。
+const SEND_LOCK_STALE_MS = 120_000;
+
+/** 进程退出时兜底清锁 —— `process.exit()` 不会走 finally。 */
+const heldLocks = new Set();
+process.on('exit', () => {
+  for (const f of heldLocks) {
+    try {
+      rmSync(f, { force: true });
+    } catch {
+      /* 退出路径上尽力而为，失败也不能抛 */
+    }
+  }
+});
+
+export function sendLockPath(id) {
+  return path.join(CONFIRM_DIR, `${id}.send.lock`);
+}
+
+/**
+ * 拿锁。返回 `{ acquired: false, reason: 'busy', holder, ageMs }` 表示别人正在发，
+ * **调用方必须据此拒绝**，不能当成成功。
+ *
+ * 拿到之后**必须**配对调用 `releaseSendLock`，否则会一直占着到进程退出。
+ * （CLI 那种每个分支都 `process.exit` 的场景可以省掉 —— 退出兜底会清。）
+ */
+export function acquireSendLock(id) {
+  const lock = sendLockPath(id);
+  mkdirSync(CONFIRM_DIR, { recursive: true });
+
+  if (existsSync(lock)) {
+    let ageMs = Infinity;
+    let holder = '';
+    try {
+      ageMs = Date.now() - statSync(lock).mtimeMs;
+      holder = readFileSync(lock, 'utf8').trim();
+    } catch {
+      /* 读不到就当它陈旧，往下走 */
+    }
+    if (ageMs < SEND_LOCK_STALE_MS) {
+      return { acquired: false, reason: 'busy', holder, ageMs };
+    }
+    rmSync(lock, { force: true }); // 陈旧 → 清掉重来
+  }
+
+  try {
+    // wx：文件已存在就失败。这一步才是真正的互斥点 ——
+    // 上面那些判断都可能是两个进程同时做，只有这个是原子的。
+    writeFileSync(lock, `pid ${process.pid} @ ${new Date().toISOString()}`, { flag: 'wx' });
+  } catch (e) {
+    if (e.code === 'EEXIST') return { acquired: false, reason: 'busy' };
+    throw e;
+  }
+
+  heldLocks.add(lock);
+  return { acquired: true };
+}
+
+export function releaseSendLock(id) {
+  const lock = sendLockPath(id);
+  heldLocks.delete(lock);
+  rmSync(lock, { force: true });
+}
+
+/** 「别人正在发」的统一说法，CLI 与 bot 都用它，免得两处措辞不一致。 */
+export function busyMessage(lock) {
+  const secs = Number.isFinite(lock.ageMs) ? `${Math.round(lock.ageMs / 1000)} 秒前` : '刚刚';
+  return `这一封正在发送中（${lock.holder || '另一个进程'}，${secs}上的锁），不重复发。`;
+}
+
+/** 上锁 → 执行 → 无论如何解锁。给**不会退出进程**的调用方（bot）用。 */
+export async function withSendLock(id, fn) {
+  const lock = acquireSendLock(id);
+  if (!lock.acquired) return lock;
+  try {
+    return { acquired: true, value: await fn() };
+  } finally {
+    releaseSendLock(id);
+  }
 }
 
 // ── 列表 ──────────────────────────────────────────────────────
@@ -351,6 +442,16 @@ if (!isMain) {
 
   // ── --send ──
   if (args.includes('--send')) {
+    // 先上锁再判 sent_at —— 顺序不能反。
+    // 读 sent_at（下面几行）到写 sent_at（发完之后）之间是敞开的，
+    // 并发进来两次就都以为"还没发过"，于是发两封。
+    // 锁不放：本进程每个分支都会 process.exit，退出兜底会清掉。
+    const lock = acquireSendLock(id);
+    if (!lock.acquired) {
+      console.error(`${red('✗')} ${busyMessage(lock)}`);
+      process.exit(2);
+    }
+
     if (draft.fm.sent_at) {
       console.error(`${red('✗')} 这封已经发过了（${draft.fm.sent_at}），不重复发。`);
       process.exit(2);
