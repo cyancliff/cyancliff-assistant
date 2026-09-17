@@ -80,6 +80,9 @@ export function createCore({ ports, ownerOpenId = '', now = () => new Date().toI
       return { decision: d.decision, acted: true, command: name, error: e.message };
     }
 
+    // 成功的命令也要记一笔。不记的话终端上只有「执行 /取信」然后就没下文了，
+    // 分不清它是跑完了、还是卡住了 —— 刚才就为这个白查了一轮。
+    log(`/${name} 完成`);
     return { decision: d.decision, acted: true, command: name };
   }
 
