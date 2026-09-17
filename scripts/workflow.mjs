@@ -454,9 +454,28 @@ const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPat
 
 if (isMain) {
   const args = process.argv.slice(2);
-  const cmd = args.find((a) => !a.startsWith('--'));
+
+  /**
+   * 带值的开关：它们**后面那个词是参数值，不是命令名**。
+   *
+   * 这个集合不是可有可无的。原来 `cmd` 是这样找的：
+   *
+   *     const cmd = args.find((a) => !a.startsWith('--'));
+   *
+   * 于是 `mail:prepare --limit 2` 里的 `2` 会被当成命令名，
+   * 而真正的 `mail:prepare` 被忽略 —— 命令静默走错分支。
+   * 实测撞出来的：传了 `--limit 2` 之后行为不对。
+   */
+  const VALUE_FLAGS = new Set(['--limit', '--query']);
+  const flagValue = (name) => {
+    const i = args.indexOf(name);
+    return i !== -1 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : null;
+  };
+
+  const positionals = args.filter((a, i) => !a.startsWith('--') && !VALUE_FLAGS.has(args[i - 1]));
+  const cmd = positionals[0];
   const dryRun = args.includes('--dry-run');
-  const limit = Number((args[args.indexOf('--limit') + 1] || '').match(/^\d+$/)?.[0] || 25);
+  const limit = Number(flagValue('--limit')) || 25;
 
   // --help 只在**既没给命令、也没给 --self-test** 时才显示。
   // 光是 `!cmd` 判断的话，`--self-test` 这类不带命令的用法会被 help 抢走。
@@ -632,7 +651,11 @@ if (isMain) {
     }
 
     const ports = realPorts();
-    const query = getEnv('GMAIL_QUERY') || 'is:unread';
+    // --query 优先于 .env 的 GMAIL_QUERY。
+    // 之前这里只读 .env，命令行传的 --query 被**静默忽略** ——
+    // 输出照样打印一个查询条件，看起来像生效了，其实没用上。
+    // 命令行参数被忽略是最难查的一类问题，所以这里显式支持它。
+    const query = flagValue('--query') || getEnv('GMAIL_QUERY') || 'is:unread';
     console.log(`${bold('取信 → 拟稿 → 推送')}  ${dim(query)}${dryRun ? dim('  (dry-run)') : ''}\n`);
     try {
       const r = await runMailWorkflow({ ports, query, limit, dryRun });
@@ -659,7 +682,9 @@ if (isMain) {
 
   // ── mail:finish ──
   if (cmd === 'mail:finish') {
-    const id = args.filter((a) => !a.startsWith('--'))[1];
+    // 用 positionals（已排除带值开关的参数值），不用原始 args ——
+    // 否则 `mail:finish --limit 2 <id>` 会把 `2` 当成 id。
+    const id = positionals[1];
     if (!id) {
       console.error(`${red('✗')} 要指定草稿 id：node scripts/workflow.mjs mail:finish <id>`);
       process.exit(2);
