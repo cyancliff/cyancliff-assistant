@@ -172,14 +172,17 @@ group('3. 卡片构造');
   chk('每个按钮的 behaviors 是 callback 类型',
     btns.every((b) => b.behaviors?.length === 1 && b.behaviors[0].type === 'callback'));
   chk('按钮 value 里带草稿 id', btns.every((b) => b.behaviors[0].value.id === 'd1'));
-  // 第一版这条写成了检查 'p' —— 而 "action":"preview" 里本来就有 p，恒真。
-  // 换了有辨识度的字符串才真的在检查。
-  chk('按钮 value 里不含正文（卡片内容会往返、会进日志）',
-    !JSON.stringify(btns.map((b) => b.value)).includes('ZZPREVIEWZZ'));
+  // 检查**整个按钮**的 JSON，而不是只看 b.value ——
+  // 实测之后去掉了同级的 value，`b.value` 变成 undefined，
+  // 只看它就变成恒真了（这正是本文件反复撞上的那一类）。
+  chk('按钮里不含正文（卡片内容会往返、会进日志）',
+    !JSON.stringify(btns).includes('ZZPREVIEWZZ'));
+  chk('回传值只放 behaviors 一处（不留两条路要维护）',
+    btns.every((b) => !('value' in b) && b.behaviors.length === 1));
 
   chk('确认按钮是 primary、作废是 danger',
-    btns.find((b) => b.value.action === ACTION.CONFIRM).type === 'primary' &&
-    btns.find((b) => b.value.action === ACTION.DISCARD).type === 'danger');
+    btns.find((b) => b.behaviors[0].value.action === ACTION.CONFIRM).type === 'primary' &&
+    btns.find((b) => b.behaviors[0].value.action === ACTION.DISCARD).type === 'danger');
 
   // 转义：邮件主题是外部输入
   chk('markdown 记号被转义（主题里的 * 不会变成粗体）',
@@ -206,7 +209,7 @@ group('3. 卡片构造');
 
   chk('完整卡片也有确认按钮（看完能直接确认）',
     allButtons(draftFullCard({ id: 'd2', to: 't', subject: 's', body: 'b' }))
-      .some((b) => b.value.action === ACTION.CONFIRM));
+      .some((b) => b.behaviors[0].value.action === ACTION.CONFIRM));
 
   chk('结果卡片能构造', resultCard({ title: 't', lines: ['a'] }).body.elements.length === 1);
   chk('buttonRow 的列数与按钮数一致', buttonRow([button({ text: 'a', value: {} }), button({ text: 'b', value: {} })]).columns.length === 2);
