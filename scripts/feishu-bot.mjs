@@ -85,7 +85,14 @@ async function runJson(script, args) {
   try {
     return JSON.parse(r.stdout);
   } catch {
-    throw new Error(`${script} 没有返回 JSON。stderr: ${r.stderr.slice(0, 300) || '(空)'}`);
+    // 把**原始输出**带出来。只说"没有返回 JSON"是不负责任的：
+    // 真正的原因往往是输出里混进了别的东西（比如一行人看的标题），
+    // 而那句话完全指不出来。第一次撞上时就是这么卡住的。
+    const head = r.stdout.trim().split('\n').slice(0, 3).join(' ⏎ ').slice(0, 200);
+    throw new Error(
+      `${script} 没有返回 JSON。stdout 开头是：${head || '(空)'}` +
+        (r.stderr ? ` ｜ stderr: ${r.stderr.slice(0, 150)}` : '')
+    );
   }
 }
 

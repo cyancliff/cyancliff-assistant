@@ -352,7 +352,16 @@ if (isMain) {
   const limit = Number(flagValue('--limit')) || 60;
   const query = flagValue('--query') || getEnv('GMAIL_TRIAGE_QUERY') || 'is:unread in:inbox';
 
-  console.log(`\n${bold('未读盘点')}  ${dim(query)}  上限 ${limit}\n`);
+  // --json 模式下 **stdout 必须是纯 JSON**：它会被别的程序解析。
+  // 人看的东西一律走 stderr（在终端里照样看得见，但不污染管道）。
+  //
+  // 这条是踩过才加的：标题那行原本打在 JSON 前面，
+  // 于是调用方 JSON.parse 直接失败 —— 而它报的是"没有返回 JSON"，
+  // 完全看不出真正的原因是多了一行标题。
+  const JSON_MODE = args.includes('--json');
+  const say = (...a) => (JSON_MODE ? console.error(...a) : console.log(...a));
+
+  say(`\n${bold('未读盘点')}  ${dim(query)}  上限 ${limit}\n`);
 
   let list;
   try {
@@ -364,7 +373,10 @@ if (isMain) {
 
   const ids = (list.messages || []).map((m) => m.id);
   if (!ids.length) {
-    console.log(dim('  没有匹配的邮件。\n'));
+    // 空结果在两种模式下都要给出**各自格式的**输出。
+    // 原来只打一句人话就 exit 0，调用方拿到的是空 stdout。
+    if (JSON_MODE) console.log(JSON.stringify({ scanned: 0, failed: 0, rows: [] }, null, 2));
+    else console.log(dim('  没有匹配的邮件。\n'));
     process.exit(0);
   }
 
@@ -386,7 +398,7 @@ if (isMain) {
     if (i % 10 === 9) await new Promise((r) => setTimeout(r, 300));
   }
 
-  if (args.includes('--json')) {
+  if (JSON_MODE) {
     console.log(JSON.stringify({ scanned: rows.length, failed, rows }, null, 2));
     process.exit(0);
   }
