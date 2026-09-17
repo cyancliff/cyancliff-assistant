@@ -31,9 +31,30 @@ restartIfNeeded();
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 
+/**
+ * 申请的权限范围。**只加能力真正需要的那一档，不要"顺手"抬上去。**
+ *
+ *   gmail.readonly  取信、读邮件
+ *   gmail.send      发信
+ *   gmail.modify    改标签、移进回收站（2026-09-17 用户要求"管理我的邮件"时加的）
+ *
+ * ── 关于 gmail.modify，有两件事要清楚 ──────────────────────────
+ * 1. 它是前两个的**超集**（能读、能发、还能改），所以留着 readonly/send
+ *    在技术上冗余 —— 但留着能让人一眼看出这个程序依赖哪两项核心能力。
+ * 2. 它**不包括永久删除**。立刻彻底删掉邮件要 `https://mail.google.com/`（全权），
+ *    那是另一个量级，没有申请。`messages.trash` 只是移进回收站，30 天内可恢复。
+ *
+ * 这三项都属于 Google 的「受限（restricted）」scope 类别 ——
+ * 但也正因如此，别指望再加更多；真需要全权时应该重新想一遍要不要给。
+ *
+ * 改动这个列表之后**必须重新授权**（`--auth`），否则令牌还是旧的权限，
+ * 撞到的报错是 `Request had insufficient authentication scopes` ——
+ * 它不会告诉你是哪个 scope 不够。
+ */
 export const SCOPE = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/gmail.modify',
 ].join(' ');
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -361,14 +382,40 @@ async function doAuth() {
 
   console.log('\n在浏览器里打开这个地址，同意授权：\n');
   console.log(`  ${authUrl.toString()}\n`);
-  console.log('（如果浏览器没自动打开，手动复制上面那行）\n');
+
+  // 同时写一份到文件：终端里的长 URL 会折行，手选复制很容易少一段，
+  // 而少了任何一段 Google 的报错都指向别处（见下面 cmd/& 那段注释）。
+  // 从文件里复制不会折行。
+  try {
+    const urlFile = path.join(ROOT, 'Personal Memory', '.dsh', 'auth-url.txt');
+    mkdirSync(path.dirname(urlFile), { recursive: true });
+    writeFileSync(urlFile, `${authUrl.toString()}\n`, 'utf8');
+    console.log(`  复制不方便的话，这个文件里也有一份（不会折行）：\n    ${urlFile}\n`);
+  } catch {
+    /* 写不出来不影响主流程 */
+  }
 
   // 尽力自动打开；打不开也不影响 —— 地址已经打印在上面了
+  //
+  // ── 为什么 Windows 上不用 `cmd /c start`（踩过）──────────────────
+  // 原来写的是 `spawn('cmd', ['/c', 'start', '', url])`。
+  // Node 在 Windows 上**只给含空格的参数加引号**，而 URL 里没有空格 ——
+  // 于是 cmd 看到的是裸的 URL，把它里面的 `&` 当成**命令分隔符**，
+  // 在第一个 `&` 处把 URL 切断。浏览器只拿到前半截，Google 回的是
+  //
+  //     错误 400：invalid_request  Required parameter is missing: response_type
+  //
+  // 而 `response_type=code` 明明就在我们生成的 URL 里。
+  // 症状具有误导性：看起来像"参数没设"，实际是**参数在传给浏览器的路上被吃了**。
+  //
+  // rundll32 不经 shell，参数由 CreateProcess 直接传，`&` 没有特殊含义。
   try {
     const cmd =
-      process.platform === 'win32' ? ['cmd', ['/c', 'start', '', authUrl.toString()]]
-      : process.platform === 'darwin' ? ['open', [authUrl.toString()]]
-      : ['xdg-open', [authUrl.toString()]];
+      process.platform === 'win32'
+        ? ['rundll32.exe', ['url.dll,FileProtocolHandler', authUrl.toString()]]
+        : process.platform === 'darwin'
+          ? ['open', [authUrl.toString()]]
+          : ['xdg-open', [authUrl.toString()]];
     spawn(cmd[0], cmd[1], { detached: true, stdio: 'ignore' }).unref();
   } catch {
     /* 忽略：地址已经打印了 */
