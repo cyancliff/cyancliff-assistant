@@ -135,6 +135,13 @@ const MUTATIONS = [
     replace: '    if (false) {',
     why: '不是命令的话会被当成命令处理',
   },
+  {
+    name: '退出清理：不在 reallyExit 之前跑',
+    file: 'proxy.mjs',
+    find: '    for (const fn of exitCleanups) {',
+    replace: '    for (const fn of []) {',
+    why: '所有退出的兜底清理都失效（发送锁就是这么漏的）—— 只有子进程测试能发现',
+  },
 ];
 
 // ── 前置：工作区必须干净 ──────────────────────────────────────

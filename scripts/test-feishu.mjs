@@ -11,7 +11,11 @@
  */
 
 import { writeFileSync, existsSync, rmSync, utimesSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 import {
   v2Card, button, buttonRow, markdown, helpCard, digestCard,
@@ -274,6 +278,32 @@ group('4. 发送锁');
   releaseSendLock(id);
 
   if (existsSync(lockPath)) rmSync(lockPath, { force: true });
+
+  // ── 回归测试：子进程退出后锁必须被清掉 ──────────────────────
+  //
+  // 这条钉住的是一个真实撞过的 bug：`proxy.mjs` 在模块加载时装了一个
+  // 调 `process.reallyExit()` 的 exit 处理器，而它会**立刻终止进程**，
+  // 把之后注册的 exit 处理器全部闷掉。mail-send 的锁清理就是这么失效的 ——
+  // 锁从来没被清过，而它会自愈（陈旧超时），所以表现成"偶发的怪毛病"。
+  //
+  // 为什么必须用子进程：exit 处理器只能在进程真的退出时观察，
+  // 在同进程里测不出来。**这也是这个 bug 能活这么久的原因。**
+  const CHILD_ID = '__exitcleanup-test';
+  const childLock = sendLockPath(CHILD_ID);
+  if (existsSync(childLock)) rmSync(childLock, { force: true });
+
+  const probe = [
+    "const u=require('node:url'),p=require('node:path');",
+    "import(u.pathToFileURL(p.join(process.cwd(),'scripts','mail-send.mjs')).href)",
+    ".then(m=>{m.acquireSendLock('" + CHILD_ID + "');process.exit(0)})",
+  ].join('');
+
+  execFileSync(process.execPath, ['-e', probe], { cwd: ROOT, stdio: 'ignore' });
+
+  chk(
+    '子进程 process.exit 之后锁被清掉了（回归：proxy 的 reallyExit 曾闷掉它）',
+    !existsSync(childLock)
+  );
 }
 
 // ══ 5. 解析子进程输出（bot 判断"发出去了没有"靠它）══════════════

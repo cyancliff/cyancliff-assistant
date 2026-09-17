@@ -33,7 +33,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gmailFetch, getEnv, DATA_ROOT, readToken, credentialsPath } from './gmail-auth.mjs';
-import { restartIfNeeded } from './proxy.mjs';
+import { restartIfNeeded, onExitCleanup } from './proxy.mjs';
 
 // 联网脚本：需要时先带代理开关重启一次自己（见 proxy.mjs 顶部说明）
 restartIfNeeded();
@@ -176,7 +176,12 @@ const SEND_LOCK_STALE_MS = 120_000;
 
 /** 进程退出时兜底清锁 —— `process.exit()` 不会走 finally。 */
 const heldLocks = new Set();
-process.on('exit', () => {
+
+// 注意：**不能自己 process.on('exit')**。
+// proxy.mjs 在模块加载时（也就是这个模块之前）装了一个调 reallyExit 的处理器，
+// 它会立刻终止进程，把之后注册的 exit 处理器全部闷掉 —— 实测撞过，
+// 锁从来没被清过。所以走它提供的注册表。
+onExitCleanup(() => {
   for (const f of heldLocks) {
     try {
       rmSync(f, { force: true });

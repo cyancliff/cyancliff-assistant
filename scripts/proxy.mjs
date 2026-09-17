@@ -144,8 +144,42 @@ export function restartIfNeeded() {
  */
 function installCleanExit() {
   process.on('exit', (code) => {
+    // 先把别人登记的清理跑完，再真的退出。
+    // 顺序不能反 —— reallyExit 会立刻终止进程。
+    for (const fn of exitCleanups) {
+      try {
+        fn();
+      } catch {
+        /* 退出路径上尽力而为，一个清理失败不能连累其它 */
+      }
+    }
     process.reallyExit(typeof code === 'number' ? code : 0);
   });
+}
+
+/**
+ * 登记"进程退出前要跑一下"的清理。**不要自己 `process.on('exit')`。**
+ *
+ * ── 为什么需要这个注册表 ────────────────────────────────────────
+ * 下面那个 `reallyExit` 会**立刻终止进程，不再执行其它 exit 监听器**。
+ * 而 Node 是按注册顺序跑的，这个模块又是很多脚本的间接依赖 ——
+ * 所以它的处理器**总是排在前面**，把它之后注册的全部闷掉。
+ *
+ * 这不是理论：`mail-send.mjs` 的发送锁靠 exit 兜底清理，
+ * 结果是**锁从来没被清过**。症状很隐蔽 ——
+ * 一次成功的发送之后，两分钟内再发同一封会报"正在发送中"，
+ * 而它会自愈（陈旧锁超时），所以像是"偶发的怪毛病"。
+ *
+ * 实测过程：隔离测试里 `process.on('exit') + rmSync` 是好的，
+ * 但只要 import 了 `mail-send.mjs`（→ 间接 import 了这个模块），
+ * 连测试自己注册的处理器都不跑了。差异就在这一行。
+ */
+const exitCleanups = new Set();
+
+/** 返回值是个取消函数（一般用不上，留着给测试）。 */
+export function onExitCleanup(fn) {
+  exitCleanups.add(fn);
+  return () => exitCleanups.delete(fn);
 }
 
 // 模块加载时就装 —— 见上面那段"为什么"
