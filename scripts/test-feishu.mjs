@@ -24,7 +24,7 @@ import { COMMANDS, parseCommand, helpRows, usageOf } from './feishu-commands.mjs
 import { DECISION, decideMessage, decideCardAction, replyFor, allowsAction } from './feishu-policy.mjs';
 
 import {
-  acquireSendLock, releaseSendLock, sendLockPath, busyMessage, withSendLock,
+  acquireSendLock, releaseSendLock, sendLockPath, busyMessage, withSendLock, parseSendOutput,
 } from './mail-send.mjs';
 
 import { createCore } from './feishu-core.mjs';
@@ -273,8 +273,35 @@ group('4. 发送锁');
   if (existsSync(lockPath)) rmSync(lockPath, { force: true });
 }
 
-// ══ 5. 核心编排（假端口）═══════════════════════════════════════
-group('5. 核心编排');
+// ══ 5. 解析子进程输出（bot 判断"发出去了没有"靠它）══════════════
+group('5. 输出解析');
+
+{
+  const okOut = ['', '  ✓ 已发送', '  Gmail message id  gm_abc123', '  收件人  a@b.com', ''].join('\n');
+  const r1 = parseSendOutput(okOut);
+  chk('看到 ✓ 已发送 + message id → 成功', r1.ok === true && r1.messageId === 'gm_abc123');
+
+  // 这一条最要紧：退出码在这台机器上不可信
+  chk('★ 退出码非零但输出说成功 → 仍然算成功（Windows 上的已知问题）',
+    parseSendOutput(okOut, '(node:1234) libuv assertion').ok === true);
+
+  const fail = parseSendOutput('', '  ✗ 正文在确认之后被改过，不发。\n  ...');
+  chk('看到 ✗ → 失败并带出那句话', fail.ok === false && fail.reason.includes('正文在确认之后被改过'));
+
+  chk('✗ 前缀被去掉（拼到卡片里不会出现多余符号）', !fail.reason.startsWith('✗'));
+
+  const nothing = parseSendOutput('随便什么输出');
+  chk('既没成功也没失败的行 → 失败，而不是默认成功', nothing.ok === false);
+  chk('原因里说清了是"没看到那两行"', /既没有成功也没有失败/.test(nothing.reason));
+
+  chk('★ 只有 ✓ 没有 message id → 不算成功（半截输出）',
+    parseSendOutput('  ✓ 已发送').ok === false);
+  chk('只有 message id 没有 ✓ → 也不算成功',
+    parseSendOutput('  Gmail message id  gm_x').ok === false);
+}
+
+// ══ 6. 核心编排（假端口）═══════════════════════════════════════
+group('6. 核心编排');
 
 {
   const OWNER = 'ou_owner';

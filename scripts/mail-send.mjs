@@ -241,6 +241,35 @@ export function busyMessage(lock) {
   return `这一封正在发送中（${lock.holder || '另一个进程'}，${secs}上的锁），不重复发。`;
 }
 
+/**
+ * 解析 `--send` 的输出。**给 bot 用** —— 它 spawn 这个脚本，然后要判断成败。
+ *
+ * 为什么放在这里而不是调用方：**打印和解析必须一起改。**
+ * 分成两处的话，哪天上面那句"✓ 已发送"改了措辞，
+ * 调用方会安静地开始把成功当失败 —— 而"安静地"是最坏的那部分。
+ *
+ * 为什么不用退出码：这个项目在 Windows 上有个未解决的问题 ——
+ * 走过代理后进程退出时会撞 libuv 断言，退出码变成 3221226505，
+ * **而输出完整正确**（见 scripts/proxy.mjs 的注释）。
+ * 所以这里一律看输出，不看退出码，否则每次成功都会被当成失败。
+ */
+export function parseSendOutput(stdout, stderr = '') {
+  const out = `${stdout || ''}\n${stderr || ''}`;
+
+  const sent = out.match(/Gmail message id\s+(\S+)/);
+  if (/✓\s*已发送/.test(out) && sent) {
+    return { ok: true, messageId: sent[1] };
+  }
+
+  const why = out
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .find((l) => l.startsWith('✗'));
+
+  return { ok: false, reason: (why || '未知原因（输出里既没有成功也没有失败的行）').replace(/^✗\s*/, '') };
+}
+
 /** 上锁 → 执行 → 无论如何解锁。给**不会退出进程**的调用方（bot）用。 */
 export async function withSendLock(id, fn) {
   const lock = acquireSendLock(id);
@@ -253,7 +282,7 @@ export async function withSendLock(id, fn) {
 }
 
 // ── 列表 ──────────────────────────────────────────────────────
-function listDrafts() {
+export function listDrafts() {
   if (!existsSync(DRAFT_DIR)) return [];
   return readdirSync(DRAFT_DIR)
     .filter((f) => f.endsWith('.md'))

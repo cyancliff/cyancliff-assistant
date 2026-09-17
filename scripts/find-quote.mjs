@@ -149,6 +149,31 @@ for (const file of files) {
   }
 }
 
+// 结构化输出：给别的程序用（飞书 bot 的 `/找` 就是调它）。
+// 加这个而不是让调用方去 parse 上面那堆带颜色的文本 ——
+// 解析给人看的输出，颜色一改就坏，而且坏得静默。
+if (args.includes('--json')) {
+  console.log(
+    JSON.stringify(
+      {
+        query,
+        root: ROOT,
+        filesScanned: files.length,
+        total: hits.length,
+        hits: hits.slice(0, LIMIT).map((h) => ({
+          file: h.file,
+          line: h.startLine,
+          endLine: h.endLine,
+          text: h.lines.slice(h.startLine - 1, h.endLine).join('\n'),
+        })),
+      },
+      null,
+      2
+    )
+  );
+  process.exit(0);
+}
+
 console.log('');
 if (!hits.length) {
   console.log(`${yellow('没找到')} ${JSON.stringify(query)}`);
