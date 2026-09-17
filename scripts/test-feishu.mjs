@@ -27,6 +27,8 @@ import {
   acquireSendLock, releaseSendLock, sendLockPath, busyMessage, withSendLock,
 } from './mail-send.mjs';
 
+import { createCore } from './feishu-core.mjs';
+
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const c = (n) => (s) => (useColor ? `\x1b[${n}m${s}\x1b[0m` : String(s));
 const green = c(32), red = c(31), dim = c(2), bold = c(1);
@@ -269,6 +271,294 @@ group('4. 发送锁');
   releaseSendLock(id);
 
   if (existsSync(lockPath)) rmSync(lockPath, { force: true });
+}
+
+// ══ 5. 核心编排（假端口）═══════════════════════════════════════
+group('5. 核心编排');
+
+{
+  const OWNER = 'ou_owner';
+
+  /** 假端口：只记录调用，不碰网络、不碰磁盘。 */
+  function fakePorts({ drafts = {}, overrides = {} } = {}) {
+    const calls = [];
+    const put = (name, args) => calls.push({ name, args });
+    const base = {
+      calls,
+      drafts,
+      sendText: async (chatId, text, opts) => put('sendText', [chatId, text, opts]),
+      sendCard: async (chatId, card, opts) => put('sendCard', [chatId, card, opts]),
+      updateCard: async (messageId, card) => put('updateCard', [messageId, card]),
+      readDraft: (id) => drafts[id] || null,
+      listDrafts: () => Object.keys(drafts).map((id) => ({ id })),
+      draftFor: async (id) => {
+        put('draftFor', [id]);
+        return '拟出来的正文';
+      },
+      discardDraft: async (id) => put('discardDraft', [id]),
+      confirmDraft: (id, via) => put('confirmDraft', [id, via]),
+      sendDraft: async (id) => {
+        put('sendDraft', [id]);
+        return { ok: true, messageId: 'gm_1' };
+      },
+      withSendLock: async (id, fn) => {
+        put('withSendLock', [id]);
+        return { acquired: true, value: await fn() };
+      },
+      mailSummary: async () => {
+        put('mailSummary', []);
+        return { scanned: 60, counts: { signal: 11, plain: 23, noise: 26 }, items: [] };
+      },
+      findQuote: async (kw) => {
+        put('findQuote', [kw]);
+        return [{ file: 'library/x.md', line: 42, text: '找到的原文' }];
+      },
+      status: async () => {
+        put('status', []);
+        return ['一切都好'];
+      },
+      stop: (why) => put('stop', [why]),
+      log: () => {},
+    };
+    return Object.assign(base, overrides);
+  }
+
+  const named = (calls, name) => calls.filter((c) => c.name === name);
+  const lastCardOf = (calls, name) => {
+    const hit = named(calls, name).pop();
+    return hit ? hit.args[1] : null;
+  };
+  const cardText = (card) => JSON.stringify(card || {});
+
+  const msg = (over = {}) => ({
+    chatId: 'oc_1', chatType: 'p2p', senderId: OWNER, messageId: 'om_1', content: '/帮助', ...over,
+  });
+
+  // ── 权限先于一切 ──
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleMessage(msg({ senderId: 'ou_other', content: '/取信' }));
+
+    chk('非主人 → 不执行', r.acted === false && r.decision === DECISION.NOT_OWNER);
+    chk('非主人 → 回了「无权操作」', named(p.calls, 'sendText').some((c) => c.args[1].includes('无权操作')));
+    chk('非主人 → 没有跑 mailSummary', named(p.calls, 'mailSummary').length === 0);
+    chk('非主人 → 没发任何卡片', named(p.calls, 'sendCard').length === 0);
+  }
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: '' });
+    const r = await core.handleMessage(msg({ senderId: 'ou_whoever' }));
+
+    chk('owner 没配 → 不执行', r.acted === false && r.decision === DECISION.CLAIM);
+    chk('owner 没配 → 回复里带上对方的 open_id',
+      named(p.calls, 'sendText').some((c) => c.args[1].includes('ou_whoever')));
+  }
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleMessage(msg({ chatType: 'group' }));
+
+    chk('群聊 → 什么都不发（连拒绝都不回）', r.acted === false && p.calls.length === 0);
+  }
+
+  // ── 不是命令就不理 ──
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleMessage(msg({ content: '你好啊' }));
+
+    chk('闲聊 → 什么都不发', r.acted === false && p.calls.length === 0);
+  }
+
+  // ── 各条命令 ──
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    await core.handleMessage(msg({ content: '/帮助' }));
+    chk('/帮助 → 发帮助卡片', named(p.calls, 'sendCard').length === 1);
+  }
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    await core.handleMessage(msg({ content: '/取信' }));
+    chk('/取信 → 调了 mailSummary', named(p.calls, 'mailSummary').length === 1);
+    chk('/取信 → 卡片里带三个计数', /11/.test(cardText(lastCardOf(p.calls, 'sendCard'))));
+  }
+  {
+    const p = fakePorts({ drafts: { d1: { id: 'd1', fm: { to: 'a@b.com', subject: 's' }, body: '正文内容' } } });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    await core.handleMessage(msg({ content: '/稿 d1' }));
+    const card = cardText(lastCardOf(p.calls, 'sendCard'));
+    chk('/稿 有草稿 → 推确认卡片', /confirm/.test(card) && /a@b\.com/.test(card));
+    chk('/稿 → 没有直接发送', named(p.calls, 'sendDraft').length === 0);
+  }
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    await core.handleMessage(msg({ content: '/稿 nope' }));
+    chk('/稿 找不到 → 回错误卡片而不是崩', named(p.calls, 'sendCard').length === 1);
+  }
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    await core.handleMessage(msg({ content: '/找 区分度均值' }));
+    chk('/找 → 调了 findQuote 且带上关键词',
+      named(p.calls, 'findQuote')[0]?.args[0] === '区分度均值');
+    chk('/找 → 卡片里带 文件:行号', /library\/x\.md:42/.test(cardText(lastCardOf(p.calls, 'sendCard'))));
+  }
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    await core.handleMessage(msg({ content: '/状态' }));
+    chk('/状态 → 调了 status', named(p.calls, 'status').length === 1);
+    chk('/状态 → 没有触发发送', named(p.calls, 'sendDraft').length === 0);
+  }
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    await core.handleMessage(msg({ content: '/停' }));
+    chk('/停 → 调了 stop', named(p.calls, 'stop').length === 1);
+  }
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    await core.handleMessage(msg({ content: '/发送 d1' }));
+    chk('未知命令 → 回帮助', named(p.calls, 'sendCard').length === 1);
+    chk('未知命令 → 没有发信', named(p.calls, 'sendDraft').length === 0);
+  }
+  {
+    const p = fakePorts({ overrides: { findQuote: async () => { throw new Error('资料库坏了'); } } });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleMessage(msg({ content: '/找 x' }));
+    chk('命令内部抛错 → 回错误卡片，不把进程带崩', r.error === '资料库坏了' && named(p.calls, 'sendCard').length === 1);
+  }
+
+  // ── 卡片按钮 ──
+  const cardEvt = (over = {}) => ({
+    messageId: 'om_card', chatId: 'oc_1',
+    operator: { openId: OWNER },
+    action: { tag: 'button', value: { action: ACTION.CONFIRM, id: 'd1' } },
+    ...over,
+  });
+
+  {
+    const p = fakePorts();
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleCardAction(cardEvt({ operator: { openId: 'ou_other' } }));
+
+    chk('非主人点按钮 → 不执行', r.acted === false);
+    chk('非主人点按钮 → 回了无权操作', named(p.calls, 'sendText').some((c) => c.args[1].includes('无权操作')));
+    chk('非主人点按钮 → 没有发信', named(p.calls, 'sendDraft').length === 0);
+    chk('非主人点按钮 → 没动卡片', named(p.calls, 'updateCard').length === 0);
+  }
+  {
+    const p = fakePorts({ drafts: { d1: { id: 'd1', fm: { to: 'a@b.com', subject: 's' }, body: 'b' } } });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleCardAction(cardEvt());
+
+    chk('主人点确认 → 真的发了', r.sent === true && named(p.calls, 'sendDraft').length === 1);
+    // 注意：named() 返回的是 {name, args}，取值要走 .args ——
+    // 第一版我按数组下标写，取到的是 undefined，于是"断言"永远不成立。
+    chk('主人点确认 → 先落了确认记录', named(p.calls, 'confirmDraft')[0]?.args[0] === 'd1');
+    chk('确认记录的渠道标明是飞书卡片', named(p.calls, 'confirmDraft')[0]?.args[1] === 'feishu-card');
+    chk('★ 发送是在锁里做的（去掉锁这条就会红）', named(p.calls, 'withSendLock').length === 1);
+    chk('发完把卡片改成「已发送」', /已发送/.test(cardText(lastCardOf(p.calls, 'updateCard'))));
+  }
+  {
+    // 已经发过的草稿：再点也不发
+    const p = fakePorts({ drafts: { d1: { id: 'd1', fm: { sent_at: '2026-01-01T00:00:00Z' }, body: 'b' } } });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleCardAction(cardEvt());
+
+    chk('已发送的草稿 → 不重复发', r.acted === false && named(p.calls, 'sendDraft').length === 0);
+    chk('已发送的草稿 → 连锁都不去拿', named(p.calls, 'withSendLock').length === 0);
+  }
+  {
+    // 拿到锁之后才发现已经被发掉了（等锁期间别人发了）
+    const drafts = { d1: { id: 'd1', fm: {}, body: 'b' } };
+    const p = fakePorts({
+      drafts,
+      overrides: {
+        withSendLock: async (id, fn) => {
+          drafts[id].fm.sent_at = '2026-01-01T00:00:00Z'; // 模拟等锁期间被别人发掉
+          return { acquired: true, value: await fn() };
+        },
+      },
+    });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleCardAction(cardEvt());
+
+    chk('锁内重读发现已发出 → 不重复发', r.reason === 'already-sent' && named(p.calls, 'sendDraft').length === 0);
+  }
+  {
+    // 并发点两下：第二次拿不到锁
+    const p = fakePorts({
+      drafts: { d1: { id: 'd1', fm: {}, body: 'b' } },
+      overrides: {
+        withSendLock: async (id, fn) => {
+          p.calls.push({ name: 'withSendLock', args: [id] });
+          if (p.calls.filter((c) => c.name === 'withSendLock').length > 1) {
+            return { acquired: false, reason: 'busy', holder: 'pid 123', ageMs: 500 };
+          }
+          return { acquired: true, value: await fn() };
+        },
+      },
+    });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const [a, b] = await Promise.all([core.handleCardAction(cardEvt()), core.handleCardAction(cardEvt())]);
+
+    chk('连点两次 → 只发一封', named(p.calls, 'sendDraft').length === 1);
+    chk('连点两次 → 第二次拿到 busy', [a.reason, b.reason].includes('busy'));
+    // 不能只看"最后一次"更新 —— 两个回调交错，谁最后写卡片是不确定的。
+    // 要问的是"有没有出现过『正在发送中』"，不是"最后一条是不是它"。
+    chk('busy 时卡片上说明了原因',
+      named(p.calls, 'updateCard').some((c) => /正在发送中/.test(cardText(c.args[1]))));
+  }
+  {
+    const p = fakePorts({
+      drafts: { d1: { id: 'd1', fm: { to: 'a@b.com', subject: 's' }, body: '很长的正文'.repeat(50) } },
+    });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    await core.handleCardAction(cardEvt({ action: { tag: 'button', value: { action: ACTION.PREVIEW, id: 'd1' } } }));
+    const card = cardText(lastCardOf(p.calls, 'updateCard'));
+    chk('看全文 → 卡片里出现完整正文', card.includes('很长的正文'));
+    chk('看全文 → 没有发送', named(p.calls, 'sendDraft').length === 0);
+  }
+  {
+    const p = fakePorts({ drafts: { d1: { id: 'd1', fm: {}, body: 'b' } } });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    await core.handleCardAction(cardEvt({ action: { tag: 'button', value: { action: ACTION.DISCARD, id: 'd1' } } }));
+    chk('作废 → 调了 discardDraft', named(p.calls, 'discardDraft').length === 1);
+    chk('作废 → 没有发送', named(p.calls, 'sendDraft').length === 0);
+  }
+  {
+    const p = fakePorts({ drafts: { d1: { id: 'd1', fm: {}, body: 'b' } } });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleCardAction(cardEvt({ action: { tag: 'button', value: {} } }));
+    chk('回调里没有 action/id → 什么都不做', r.acted === false && named(p.calls, 'sendDraft').length === 0);
+  }
+  {
+    // 发信失败：卡片上要写清原因
+    const p = fakePorts({
+      drafts: { d1: { id: 'd1', fm: { to: 'a@b.com', subject: 's' }, body: 'b' } },
+      overrides: { sendDraft: async () => ({ ok: false, reason: 'Gmail 401' }) },
+    });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleCardAction(cardEvt());
+    chk('发送失败 → 返回 sent:false 并带上原因', r.sent === false && r.reason === 'Gmail 401');
+    chk('发送失败 → 卡片上写了原因', /Gmail 401/.test(cardText(lastCardOf(p.calls, 'updateCard'))));
+  }
+  {
+    // 更新卡片自己失败，不能影响"已经发出去了"这个事实
+    const p = fakePorts({
+      drafts: { d1: { id: 'd1', fm: { to: 'a@b.com', subject: 's' }, body: 'b' } },
+      overrides: { updateCard: async () => { throw new Error('卡片服务 500'); } },
+    });
+    const core = createCore({ ports: p, ownerOpenId: OWNER });
+    const r = await core.handleCardAction(cardEvt());
+    chk('更新卡片失败不影响发送结果', r.sent === true && named(p.calls, 'sendDraft').length === 1);
+  }
 }
 
 // ══ 结果 ══════════════════════════════════════════════════════

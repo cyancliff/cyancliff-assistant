@@ -107,6 +107,34 @@ const MUTATIONS = [
     replace: "    return { acquired: false, reason: 'busy', holder: 'stale-never-cleared' };",
     why: '进程崩一次就永久卡住，再也发不出去',
   },
+  {
+    name: '核心：确认时不走锁',
+    file: 'feishu-core.mjs',
+    find: 'const locked = await ports.withSendLock(id, async () => {',
+    replace: 'const locked = await (async (f) => ({ acquired: true, value: await f() }))(async () => {',
+    why: '连点两次按钮会发两封 —— 锁就是为这个加的',
+  },
+  {
+    name: '核心：锁内不重读草稿状态',
+    file: 'feishu-core.mjs',
+    find: "      if (draft?.fm?.sent_at) return { ok: false, reason: 'already-sent', sentAt: draft.fm.sent_at };",
+    replace: '      // 突变：锁内不重读',
+    why: '等锁期间别人已经发掉了，这里不查就会再发一封',
+  },
+  {
+    name: '核心：非主人也执行',
+    file: 'feishu-core.mjs',
+    find: '    if (!allowsAction(d.decision)) {\n      log(`拒绝消息：${d.decision}`);',
+    replace: '    if (false) {\n      log(`拒绝消息：${d.decision}`);',
+    why: '权限判定形同虚设',
+  },
+  {
+    name: '核心：闲聊也往下走',
+    file: 'feishu-core.mjs',
+    find: "    if (parsed.kind === 'none') {",
+    replace: '    if (false) {',
+    why: '不是命令的话会被当成命令处理',
+  },
 ];
 
 // ── 前置：工作区必须干净 ──────────────────────────────────────
