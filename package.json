@@ -17,9 +17,13 @@
     "test:pipeline": "node scripts/test-pipeline.mjs",
     "test:hooks": "node scripts/run-sh.mjs scripts/test-hooks.sh",
     "test": "node scripts/test-pipeline.mjs && node scripts/test-credentials.mjs && node scripts/mail-fetch.mjs --dummy && node scripts/workflow.mjs --self-test && node scripts/mail-triage.mjs --self-test && node scripts/run-sh.mjs scripts/test-hooks.sh",
-    "mail:triage": "node scripts/mail-triage.mjs"
+    "mail:triage": "node scripts/mail-triage.mjs",
+    "feishu:probe": "node scripts/feishu-probe.mjs"
   },
   "engines": {
     "node": ">=22.12.0"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.74.0"
   }
 }
