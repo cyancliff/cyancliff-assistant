@@ -1,0 +1,59 @@
+#!/bin/sh
+# 公开仓的推送闸门：确保个人数据一个字节都不会上去。
+#
+# 外层是公开仓，任何人可见；内层 Personal Memory/ 是私有数据。
+# .gitignore 挡住的是"手滑 git add ."，挡不住这两件事：
+#
+#   1. `git add -f`                 —— 强行加进去
+#   2. 把内层当成 gitlink 记进去     —— 推上去是一条指向不存在提交的死链，
+#                                      对端看不到内容，所以不报错，只会安静地错
+#
+# 所以这里在推送前，把**将要公开的每一棵树**都查一遍。
+#
+# 装（只在本仓生效）：
+#     git config core.hooksPath .githooks
+
+z=0000000000000000000000000000000000000000
+bad=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # 去掉可能的 \r：git 自己写的是 LF，但别的手段（Windows 上的管道、
+  # 手写测试）可能带 CR。带上了就会让下面"全零"的比较失配，
+  # 于是"新分支要查整条历史"退化成"只查末端" —— 少查一层，而且不报错。
+  remote_sha=$(printf '%s' "$remote_sha" | tr -d '\r')
+
+  [ -z "$local_sha" ] && continue
+  [ "$local_sha" = "$z" ] && continue
+
+  if [ "$remote_sha" = "$z" ]; then
+    commits=$(git rev-list "$local_sha" 2>/dev/null)   # 新分支：整条历史都要公开
+  else
+    commits=$(git rev-list "$remote_sha..$local_sha" 2>/dev/null)
+  fi
+  [ -z "$commits" ] && commits="$local_sha"
+
+  for c in $commits; do
+    # 注意 `Personal Memory` 后面那三个分支：`/`（普通文件）、`"`（被加引号的路径）、
+    # `$`（**gitlink 条目名后面什么都没有**）。
+    # 少了 `$` 就会恰好漏掉 gitlink —— 也就是本钩子最该拦的那一种。
+    # 这不是想出来的：第一版就是少了它，突变测试里 gitlink 直接放行。
+    hit=$(git ls-tree -r --name-only "$c" 2>/dev/null \
+          | grep -E '^"?Personal Memory(/|"|$)|(^|/)(credentials|token)\.json$|\.pem$|\.key$|(^|/)\.env$')
+    if [ -n "$hit" ]; then
+      bad=1
+      echo "" >&2
+      echo "  ✗ 拒绝推送：$local_ref 的提交 $c 里有不该公开的路径" >&2
+      echo "$hit" | sed 's/^/        /' >&2
+    fi
+  done
+done
+
+if [ "$bad" = "1" ]; then
+  echo "" >&2
+  echo "    外层是公开仓，推上去就是永久的 —— 进 git 历史、RSS、搜索引擎。" >&2
+  echo "    先 git rm --cached 掉，确认历史里也没有，再来推。" >&2
+  echo "" >&2
+  exit 1
+fi
+
+exit 0
