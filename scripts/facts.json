@@ -20,6 +20,10 @@
       "checks": 25,
       "ok": true
     },
+    "importance": {
+      "checks": 19,
+      "ok": true
+    },
     "feishu": {
       "checks": 148,
       "ok": true
@@ -33,11 +37,11 @@
       "ok": true
     }
   },
-  "assertionTotal": 305,
+  "assertionTotal": 324,
   "mutationCount": 17,
   "mutationTarget": "test-feishu.mjs",
   "trackedFiles": {
-    "public": 43,
+    "public": 44,
     "private": 41
   },
   "npmScripts": [
@@ -53,6 +57,7 @@
     "mail:auth",
     "mail:draft",
     "mail:fetch",
+    "mail:important",
     "mail:triage",
     "notify",
     "publish",
@@ -81,6 +86,7 @@
     "mail-classify.mjs",
     "mail-draft.mjs",
     "mail-fetch.mjs",
+    "mail-important.mjs",
     "mail-send.mjs",
     "mail-triage.mjs",
     "notify-lib.mjs",

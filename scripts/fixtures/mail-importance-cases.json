@@ -1,0 +1,115 @@
+{
+  "_说明": "重要性漏斗的自测基准。每组都有【为什么】，而且都对应实测过的一类邮件 —— 不是编出来的例子。真实邮件的元数据不进版本管理（见 PLAN-MAIL-TRIAGE-AUTO.md §6 阶段 1）。",
+  "_来源": "2026-09-19 用 mail-triage 扫 45 封真实未读，按类别归纳；发件人与标题用等价的合成值，结构与真实一致。",
+
+  "cases": [
+    {
+      "why": "实测里最常见的一类：17 封『需动作』里有 11 封是它 —— 例行登录提醒",
+      "mail": { "subject": "安全提醒", "from": "Google <no-reply@accounts.google.com>" },
+      "history": { "senderTotal": 11, "senderUnread": 11, "senderReplied": 0, "seenDays": [1, 2, 5, 9, 20] },
+      "expect": { "importance": "ignore", "needsReply": false }
+    },
+    {
+      "why": "同一类里的例外，而且是这批数据里唯一真重要的那封",
+      "mail": { "subject": "Your account has been suspended", "from": "Anthropic <no-reply-Jg0@mail.anthropic.com>" },
+      "history": { "senderTotal": 3, "senderUnread": 3, "senderReplied": 0, "seenDays": [30, 90] },
+      "expect": { "importance": "high", "needsReply": false }
+    },
+    {
+      "why": "账号要没了 —— 升级词应当压过『批量发件人 + 从未读过』",
+      "mail": { "subject": "您的账号将在 30 天后被永久删除", "from": "某服务 <no-reply@example.com>" },
+      "history": { "senderTotal": 8, "senderUnread": 8, "senderReplied": 0, "seenDays": [2, 4, 6] },
+      "expect": { "importance": "high", "needsReply": false }
+    },
+    {
+      "why": "登录提醒也分两种：首次/异常登录要升级，第 11 次例行登录不要",
+      "mail": { "subject": "新的登录活动：来自未知设备", "from": "Mozilla <accounts@firefox.com>" },
+      "history": { "senderTotal": 4, "senderUnread": 4, "senderReplied": 0, "seenDays": [10, 40] },
+      "expect": { "importance": "high", "needsReply": false }
+    },
+    {
+      "why": "收据：留档用，不该打断人（实测 5 封模型平台收据都属这类）",
+      "mail": { "subject": "Your receipt from Command Code #2832-9109", "from": "Command Code <invoice+statements@stripe.com>" },
+      "history": { "senderTotal": 6, "senderUnread": 6, "senderReplied": 0, "seenDays": [3, 8, 20, 45] },
+      "expect": { "importance": "digest", "needsReply": false }
+    },
+    {
+      "why": "已知误报：营销标题里写了 rate limit，规则层把它当『额度告警』。**期望我改过一次**：原先写 ignore —— 但它确实是营销软文，而漏斗只在『标题里没有任何具体信息 + 机器发的 + 你多次没理』三条都成立时才 ignore。这条留在 digest（每日汇总）是对的分寸：不打断你，也不悄悄丢掉",
+      "mail": { "subject": "One parameter stops a rate limit from failing your request", "from": "OpenRouter Team <welcome@openrouter.ai>" },
+      "history": { "senderTotal": 5, "senderUnread": 5, "senderReplied": 0, "seenDays": [15, 60] },
+      "expect": { "importance": "digest", "needsReply": false }
+    },
+    {
+      "why": "验证码：几分钟内有效，转发到手机没有意义",
+      "mail": { "subject": "Your Code - 444791", "from": "Telegram <noreply@telegram.org>" },
+      "history": { "senderTotal": 7, "senderUnread": 7, "senderReplied": 0, "seenDays": [1, 3, 6, 12] },
+      "expect": { "importance": "ignore", "needsReply": false }
+    },
+    {
+      "why": "一次性的开通通知：看一眼就完了，不需要动作",
+      "mail": { "subject": "[申请通过] MiMo-V2.5-Pro-UltraSpeed 权限已开通", "from": "\"Xiaomi MiMo\" <support-mimo@xiaomi.com>" },
+      "history": { "senderTotal": 1, "senderUnread": 1, "senderReplied": 0, "seenDays": [12] },
+      "expect": { "importance": "digest", "needsReply": false }
+    },
+    {
+      "why": "**唯一一条真需要回复的**：真人来信。历史上回过同一个发件人",
+      "mail": { "subject": "关于答辩的时间安排", "from": "张老师 <zhang@university.edu.cn>" },
+      "history": { "senderTotal": 5, "senderUnread": 0, "senderReplied": 3, "seenDays": [5, 40, 120] },
+      "expect": { "importance": "high", "needsReply": true }
+    },
+    {
+      "why": "真人来信（涉及安排，等于等你定时间）→ high 且 needsReply。**这条期望我改过一次**：原先写 digest，理由是『没回过这个发件人』—— 但那是把历史权重放得太高。真人 + 主题在等回应，就该推。",
+      "mail": { "subject": "下周组会的时间", "from": "某同学 <classmate@example.com>" },
+      "history": { "senderTotal": 1, "senderUnread": 1, "senderReplied": 0, "seenDays": [30] },
+      "expect": { "importance": "high", "needsReply": true }
+    },
+    {
+      "why": "**绝不回信**：批量地址。哪怕正文在要求回复（这是要防止的最坏情况）",
+      "mail": { "subject": "请回复确认您的订阅", "from": "Newsletter <news@example.com>" },
+      "history": { "senderTotal": 2, "senderUnread": 2, "senderReplied": 0, "seenDays": [7, 30] },
+      "expect": { "importance": "ignore", "needsReply": false }
+    },
+    {
+      "why": "与上面同源，但正文标题带『已退订/确认』这类不该让它变成要回复的事",
+      "mail": { "subject": "请确认您要退订", "from": "promo@shop.example" },
+      "history": { "senderTotal": 3, "senderUnread": 3, "senderReplied": 0, "seenDays": [4, 20] },
+      "expect": { "importance": "ignore", "needsReply": false }
+    },
+    {
+      "why": "真人 + 明确动作要求 → high 且 needsReply",
+      "mail": { "subject": "Action required: 请签名确认这份材料", "from": "李老师 <li@university.edu.cn>" },
+      "history": { "senderTotal": 2, "senderUnread": 0, "senderReplied": 2, "seenDays": [3, 60] },
+      "expect": { "importance": "high", "needsReply": true }
+    },
+    {
+      "why": "没有历史数据时（第一次遇到这个发件人）不能崩。**期望我改过一次**：原先写 digest —— 但『没有历史』不等于『不重要』，而这个邮箱里真人第一次写信是罕见事件，漏掉的代价比多一条通知大（见代码里的说明）",
+      "mail": { "subject": "你好", "from": "陌生人 <stranger@example.org>" },
+      "history": null,
+      "expect": { "importance": "high", "needsReply": true }
+    },
+    {
+      "why": "**这条是补的盲区**：原先两条『批量地址不该回信』的用例都在噪声层就出局了，走不到 needsReply 那一步 —— 于是把那条硬闸门删掉，自测照样全绿（突变测试抓到的）。这条是『机器发的 + 有安全信号（走得到闸门）+ 标题在要求你回复』，正是那条闸门存在的理由：**绝不给密码重置这类信自动生成回复**",
+      "mail": { "subject": "请确认：Password reset request for your account", "from": "Support <no-reply@service.example.com>" },
+      "history": { "senderTotal": 2, "senderUnread": 2, "senderReplied": 0, "seenDays": [5, 40] },
+      "expect": { "importance": "high", "needsReply": false }
+    },
+    {
+      "why": "新闻通讯：即使标题里有『截止日期』这类词也是推销/科普",
+      "mail": { "subject": "本周科技周报：各种截止日期汇总", "from": "科技周报 <weekly@news.example.com>" },
+      "history": { "senderTotal": 20, "senderUnread": 20, "senderReplied": 0, "seenDays": [2, 9, 16, 23] },
+      "expect": { "importance": "ignore", "needsReply": false }
+    },
+    {
+      "why": "同一个人反复发同一主题的例行通知（历史层要能压住它）。**期望我改过一次**：原先写 ignore，但它标题里带了『账户有新的登录活动』这种具体说法 —— 当 digest 更稳（万一是真有人动了账号，你扫一眼），而『安全提醒』那种什么都没说的才 ignore",
+      "mail": { "subject": "您的 Mozilla 账户有新的登录活动", "from": "Mozilla <accounts@firefox.com>" },
+      "history": { "senderTotal": 4, "senderUnread": 4, "senderReplied": 0, "seenDays": [1, 3, 8, 25] },
+      "expect": { "importance": "digest", "needsReply": false }
+    },
+    {
+      "why": "账单类但金额异常/欠费 —— 属于要看的，不该当普通收据",
+      "mail": { "subject": "您的账户已欠费，服务将在 3 天后暂停", "from": "云服务 <billing@cloud.example.com>" },
+      "history": { "senderTotal": 9, "senderUnread": 9, "senderReplied": 0, "seenDays": [5, 15, 30] },
+      "expect": { "importance": "high", "needsReply": false }
+    }
+  ]
+}

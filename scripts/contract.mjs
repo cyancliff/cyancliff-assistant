@@ -109,6 +109,7 @@ function measure() {
     idempotency: ['scripts/mail-fetch.mjs', '--dummy'],
     workflow: ['scripts/workflow.mjs', '--self-test'],
     triage: ['scripts/mail-triage.mjs', '--self-test'],
+    importance: ['scripts/mail-important.mjs', '--self-test'],
     feishu: ['scripts/test-feishu.mjs'],
     publish: ['scripts/publish.mjs', '--self-test'],
   };
