@@ -191,9 +191,9 @@ const MUTATIONS = [
         why.push('第一次见到这个机器发件人 —— 没有证据说它重要，攒进汇总');
         return { importance: 'digest', needsReply: false, why };
       }`,
-    replace: `      if (false) {
-        why.push('第一次见到这个机器发件人 —— 没有证据说它重要，攒进汇总');
-        return { importance: 'digest', needsReply: false, why };
+    replace: `      if (bulk) {
+        why.push('MUTATION：机器发的也当首次来信推');
+        return { importance: 'high', needsReply: true, why };
       }`,
     why: '接进真数据时抓到的：Anthropic 的营销信被判 high + "要回"，9 封里 6 封 high —— 通知疲劳原样搬回来',
   },
@@ -221,8 +221,8 @@ const MUTATIONS = [
     test: 'workflow.mjs',
     testArgs: ['--self-test'],
     find: '  if (STAGES.indexOf(stage) <= STAGES.indexOf(stageOf(seen, id))) return false;',
-    replace: '  if (STAGES.indexOf(stage) < STAGES.indexOf(stageOf(seen, id))) return false;',
-    why: '允许同阶段重复推进本身无害，但**倒退**会让已 notified 的退回 drafted，下一轮再推一次给用户',
+    replace: '  if (false) return false;',
+    why: '允许倒退会让已 notified 的退回 drafted，下一轮再推一次给用户。这条原先漏掉，是因为自测里**没有一条直接测 advanceStage 的顺序** —— 现在补了',
   },
 ];
 

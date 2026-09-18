@@ -639,6 +639,25 @@ if (isMain) {
     chk('未确认就 finish：被闸门 1 拦住', fin3a.results[0].ok === false && /还没确认/.test(fin3a.results[0].why));
     chk('未确认时没有真的发送', p3._state.sent.length === 0);
 
+    /**
+     * 2.6) **阶段只能前进**。
+     *
+     * 这一节是**突变测试逼出来的**：把 `advanceStage` 的顺序检查改坏之后，
+     * 自测照样全绿 —— 因为没有一条断言直接测过它。
+     * 而它坏了的表现是"已通知的退回已拟稿，下一轮再推一次"：重复打扰用户，
+     * 而且不报错 —— 正是这个项目最怕的那一类。
+     */
+    const stageSeen = { processed: { s1: { at: 'x', subject: 'a', from: 'b' } } };
+    chk('阶段：新记录默认是 fetched', stageOf(stageSeen, 's1') === 'fetched');
+    chk('阶段：能前进（fetched → drafted）', advanceStage(stageSeen, 's1', 'drafted') === true);
+    chk('阶段：前进后确实变了', stageOf(stageSeen, 's1') === 'drafted');
+    chk('阶段：能继续前进（drafted → notified）', advanceStage(stageSeen, 's1', 'notified') === true);
+    chk('★ 阶段：**不能倒退**（notified → drafted 要被拒）', advanceStage(stageSeen, 's1', 'drafted') === false);
+    chk('★ 阶段：倒退被拒之后值没变', stageOf(stageSeen, 's1') === 'notified');
+    chk('阶段：同一档再推是 no-op', advanceStage(stageSeen, 's1', 'notified') === false);
+    chk('阶段：不存在的 id 返回 false（不抛）', advanceStage(stageSeen, 'nope', 'drafted') === false);
+    chk('阶段：缺字段的旧记录当 fetched', stageOf({ processed: { s2: { at: 'x' } } }, 's2') === 'fetched');
+
     // 4) 确认之后正文被改：闸门 2 应当拦住
     //
     // 这一条一开始漏了 —— 突变测试把 stepFinish 里的摘要检查改成恒假，
