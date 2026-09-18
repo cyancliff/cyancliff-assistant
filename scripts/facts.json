@@ -17,19 +17,19 @@
       "ok": true
     },
     "triage": {
-      "checks": 25,
+      "checks": 18,
       "ok": true
     },
     "importance": {
-      "checks": 19,
+      "checks": 18,
       "ok": true
     },
     "feishu": {
-      "checks": 148,
+      "checks": 147,
       "ok": true
     },
     "publish": {
-      "checks": 55,
+      "checks": 42,
       "ok": true
     },
     "hooks": {
@@ -37,11 +37,11 @@
       "ok": true
     }
   },
-  "assertionTotal": 324,
+  "assertionTotal": 302,
   "mutationCount": 17,
   "mutationTarget": "test-feishu.mjs",
   "trackedFiles": {
-    "public": 44,
+    "public": 46,
     "private": 41
   },
   "npmScripts": [

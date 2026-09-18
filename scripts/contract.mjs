@@ -88,11 +88,24 @@ function gitLines(cwd, gitArgs) {
   return r.out.split('\n').map((l) => l.trim()).filter(Boolean);
 }
 
-/** 数一个自测输出了多少条 ✓。`--self-test` 类脚本没有自报总数，只能数。 */
+/**
+ * 数一个自测输出了多少条 ✓，**并优先采用它自己报的总数**。
+ *
+ * 为什么要读它自报的数：有些脚本的 ✓ 行数与其声明的项数不同
+ * （例如它会为一项打印多行，或有一行是说明）。**脚本自己报的才是权威**，
+ * 我数出来的只是近似 —— 而这个脚本存在的理由就是"数字必须机器给"。
+ * 报了就采信，没报才退回数 ✓ 行。
+ */
 function countChecks(scriptArgs) {
   const r = nodeRun('node', scriptArgs);
-  const checks = r.out.split('\n').filter((l) => l.includes('✓')).length;
-  return { checks, ok: r.status === 0 };
+  const out = r.out;
+  const checks = out.split('\n').filter((l) => l.includes('✓')).length;
+
+  // 形如「全部通过（18 项）」「飞书模块自测通过（147 项）」「分类逻辑通过（18 项）」
+  const declared = [...out.matchAll(/通过（(\d+)\s*项）/g)].map((m) => Number(m[1]));
+  const total = declared.length ? declared[declared.length - 1] : checks;
+
+  return { checks: total, countedLines: checks, ok: r.status === 0, declared: declared.length > 0 };
 }
 
 /**
