@@ -200,14 +200,29 @@ group('3. 卡片构造');
   chk('截断处说明了还剩多少（不悄悄截）', /还有 200 字/.test(long.text));
   chk('没超长就不动它', truncate('abc', 100).text === 'abc' && !truncate('abc', 100).truncated);
 
+  // 三档的字段名在 2026-09-19 换过：原先 signal/plain/noise 是**规则分类器**的分法
+  // （"标题里有没有信号词"），会把 17 封例行登录提醒全算成"需动作"。
+  // 现在是重要性漏斗的 high/digest/ignore —— 语义是"要不要现在打断你"。
   const digest = digestCard({
     scanned: 60,
-    counts: { signal: 11, plain: 23, noise: 26 },
-    items: [{ subject: 's1', from: 'f1', kind: 'signal' }],
+    counts: { high: 11, digest: 23, ignore: 26 },
+    items: [{ subject: 's1', from: 'f1', kind: 'high', why: '升级词：账号被停用', needsReply: false }],
   });
   const digestText = JSON.stringify(digest);
   chk('摘要卡片带上了三个计数', /11/.test(digestText) && /23/.test(digestText) && /26/.test(digestText));
-  chk('有需动作的用橙色表头', digest.header.template === 'orange');
+  chk('有要立刻看的 → 橙色表头', digest.header.template === 'orange');
+  chk('卡片上写出了判断理由（判错时能看出为什么）', /账号被停用/.test(digestText));
+  // 空的时候不该是橙色（橙色 = 有事要办）
+  const emptyDigest = digestCard({ scanned: 5, counts: { high: 0, digest: 2, ignore: 3 }, items: [] });
+  chk('没有要立刻看的 → 蓝色表头', emptyDigest.header.template === 'blue');
+  chk('没有要立刻看的 → 明说，而不是留白', /没有需要立刻处理的/.test(JSON.stringify(emptyDigest)));
+  // 要回复的那条要单独标出来 —— 那是"需要动作"的本义
+  const replyDigest = digestCard({
+    scanned: 1,
+    counts: { high: 1, digest: 0, ignore: 0 },
+    items: [{ subject: '下周组会的时间', from: '某同学 <a@b.com>', kind: 'high', why: '要回：主题以问号结尾', needsReply: true }],
+  });
+  chk('要回复的条目被标出来', /看起来要回复/.test(JSON.stringify(replyDigest)));
 
   chk('帮助卡片列出了每个命令',
     COMMANDS.every((c) => JSON.stringify(helpCard(helpRows())).includes(`/${c.name}`)));
@@ -368,7 +383,8 @@ group('6. 核心编排');
       },
       mailSummary: async () => {
         put('mailSummary', []);
-        return { scanned: 60, counts: { signal: 11, plain: 23, noise: 26 }, items: [] };
+        // 字段名与 feishu-bot.mjs 的 mailSummary 一致（high/digest/ignore）
+        return { scanned: 60, counts: { high: 11, digest: 23, ignore: 26 }, items: [] };
       },
       findQuote: async (kw) => {
         put('findQuote', [kw]);

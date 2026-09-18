@@ -114,25 +114,37 @@ export function helpCard(rows) {
 /**
  * 待办摘要（对应 `/取信`）。
  *
- * `items` 每条是 `{ subject, from, kind }`，`kind` 取 signal / plain / noise。
- * 只列需要动作的，其余只报数量 —— 摘要的意义是"把 200 封压成看得完的十几条"。
+ * `items` 每条是 `{ subject, from, kind, why, needsReply }`，
+ * `kind` 现在只有一种：`high`（要立刻看的）。counts 是 `{high, digest, ignore}`。
+ *
+ * ## 为什么字段名从 signal/plain/noise 改了（2026-09-19）
+ *
+ * 这三档是**规则分类器**的分法（"标题里有没有信号词"），而它会把 17 封例行
+ * 登录提醒全算成"需动作"。换成重要性漏斗之后，分档变成
+ * **high / digest / ignore** —— 语义是"要不要现在打断你"，而不是"标题里有没有词"。
+ *
+ * 摘要的意义没变：**把几百封压成看得完的几条**。
  */
 export function digestCard({ scanned, counts, items, limit = 12 }) {
   const shown = items.slice(0, limit);
   const lines = shown.map((it, i) => {
-    const tag = it.kind === 'signal' ? '🔴' : it.kind === 'plain' ? '⚪' : '⚫';
-    return `${i + 1}. ${tag} **${escapeInline(it.subject)}**\n　　${escapeInline(it.from)}`;
+    const tag = it.needsReply ? '🔴' : '🟠';
+    const why = it.why ? `\n　　_${escapeInline(String(it.why).slice(0, 90))}_` : '';
+    const reply = it.needsReply ? `\n　　**看起来要回复**` : '';
+    return `${i + 1}. ${tag} **${escapeInline(it.subject)}**\n　　${escapeInline(it.from)}${why}${reply}`;
   });
 
   const more = items.length > shown.length ? `\n\n_还有 ${items.length - shown.length} 条没列出来_` : '';
 
   return v2Card({
-    title: `未读摘要 · 扫了 ${scanned} 封`,
-    template: counts.signal > 0 ? 'orange' : 'blue',
+    title: `要立刻看的 · 扫了 ${scanned} 封`,
+    template: (counts.high || 0) > 0 ? 'orange' : 'blue',
     elements: [
-      markdown(`🔴 需动作 **${counts.signal}**　⚪ 普通 **${counts.plain}**　⚫ 噪声 **${counts.noise}**`),
+      markdown(
+        `🔴 要立刻看 **${counts.high || 0}**　🟡 攒汇总 **${counts.digest || 0}**　⚪ 忽略 **${counts.ignore || 0}**`
+      ),
       divider(),
-      markdown(lines.length ? lines.join('\n') + more : '_没有需要动作的。_'),
+      markdown(lines.length ? lines.join('\n') + more : '_没有需要立刻处理的。_'),
     ],
   });
 }

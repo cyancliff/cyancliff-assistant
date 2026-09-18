@@ -107,11 +107,46 @@ export const NOISE = [
     // 全都命中它。所以它必须比内容信号**弱**。
     //
     // 代价仍要说清：真人若用 `support@公司域名` 发信且标题无线索，会被误判成噪声。
+    //
+    // 2026-09-19 扩表：`team@` / `hello@` / `info@` 这些**看着像人、其实是团队群发**的
+    // 地址原先漏了。实测撞到的是 `team@email.anthropic.com` —— 它被判成"真人首次来信"，
+    // 于是营销信同时拿走了 high 与"要回"（9 封里 6 封 high，通知疲劳原样搬回来）。
+    //
+    // 但**靠地址猜"是不是机器发的"永远会有漏网**。所以这只是一道，
+    // 第二道见 `looksAutomated()`（用 Gmail 自己的分类标签，不靠猜）。
     name: '批量发信地址',
     senderOnly: true,
-    re: /\b(no-?reply|donotreply|do-not-reply|newsletter|news|updates?|notifications?|marketing|promo|billing|invoice|support|mailer|bounce)@/i,
+    re: /\b(no-?reply|donotreply|do-not-reply|newsletter|news|updates?|notifications?|marketing|promo|billing|invoice|support|mailer|bounce|team|hello|hi|info|contact|admin|accounts?|alerts?|digest|press|events?|community|feedback)@/i,
   },
 ];
+
+/**
+ * **机器发的**（第二道，不靠猜地址）。
+ *
+ * ## 为什么需要它
+ *
+ * 上一条靠"地址里有没有 no-reply 这类词"猜，而**猜不准**：`team@`、`hello@`、
+ * `welcome@` 看着像人，其实是群发；而 `accounts@firefox.com` 看着像机器，
+ * 它发的"新登录"却可能是真信号。
+ *
+ * Gmail **自己**已经在分类了，而且分得比关键词准。所以：
+ *
+ *   · 发件人地址命中批量模式 → 机器发的
+ *   · 这封信被 Gmail 归进 `CATEGORY_PROMOTIONS` / `CATEGORY_UPDATES` /
+ *     `CATEGORY_FORUMS` / `CATEGORY_SOCIAL` → 机器发的
+ *
+ * `CATEGORY_PERSONAL` 与没有分类**都不算**（默认邮箱根本不分这些类，
+ * 那时这个判据必须是"不知道"，不能是"不是机器"）。
+ *
+ * @param {string} from  `From:` 头
+ * @param {string[]|null} labels  Gmail 的 labelIds（取不到就传 null）
+ */
+export function looksAutomated(from = '', labels = null) {
+  if (isBulkSender(from)) return true;
+  if (!Array.isArray(labels)) return false; // 不知道 ≠ 不是
+  const bulkCategories = ['CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS', 'CATEGORY_SOCIAL'];
+  return labels.some((l) => bulkCategories.includes(l));
+}
 
 /**
  * **删掉的东西，记下来免得以后有人再想加。**

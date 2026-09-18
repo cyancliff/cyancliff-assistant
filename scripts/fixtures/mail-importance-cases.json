@@ -94,6 +94,24 @@
       "expect": { "importance": "high", "needsReply": false }
     },
     {
+      "why": "**接进真数据之后才发现的缺陷**（2026-09-19）：机器发件人 + 没有历史。第一版把它判成『首次来信 → high + 要回』，真扫一遍的结果是 9 封里 6 封 high，通知疲劳原样搬回来。错因：**『没有历史』不等于『是人写的』**。**期望改过一次**：写完 `looksAutomated` 之后 `team@` 被认成批量地址，它一度落到 ignore —— 但按这套判据的分寸，ignore 那一档要求『机器发的 + 你多次没理』，而它没有历史（没证据），所以该进每日汇总而不是被丢掉",
+      "mail": { "subject": "You're in—meet Claude, your new AI assistant", "from": "Anthropic Team <team@email.anthropic.com>" },
+      "history": null,
+      "expect": { "importance": "digest", "needsReply": false }
+    },
+    {
+      "why": "安全告警也走 `no-reply@` 这类地址，但它有升级证据 —— 必须压过『机器发的 + 没历史就攒着』",
+      "mail": { "subject": "Security alert", "from": "Google <no-reply@accounts.google.com>" },
+      "history": null,
+      "expect": { "importance": "high", "needsReply": false }
+    },
+    {
+      "why": "账号被关闭的通知：社交推送的地址 + 升级词。**升级词必须压过社交推送这条噪声** —— 真实邮件里 discord 那封就是这么被判出来的",
+      "mail": { "subject": "账号已关闭 - 违反 TOS/社区守则通知", "from": "Discord <noreply@discord.com>" },
+      "history": null,
+      "expect": { "importance": "high", "needsReply": false }
+    },
+    {
       "why": "新闻通讯：即使标题里有『截止日期』这类词也是推销/科普",
       "mail": { "subject": "本周科技周报：各种截止日期汇总", "from": "科技周报 <weekly@news.example.com>" },
       "history": { "senderTotal": 20, "senderUnread": 20, "senderReplied": 0, "seenDays": [2, 9, 16, 23] },

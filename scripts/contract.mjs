@@ -404,13 +404,44 @@ function main() {
     // **配置项要保住**：measure() 只产出测出来的东西，而 docsToCheck 这类
     // 是配置不是测量。直接覆盖会把作用域配置悄悄清掉，审计于是变成"什么都不查"
     // —— 那正是这个脚本要治的病，不能自己犯。
-    const CONFIG_KEYS = ['_说明', 'docsToCheck', 'privateDocsToCheck', 'historicalFiles', 'foreignNpmScripts'];
+    //
+    // 2026-09-19 修：第一版只给 `_说明` 与 `foreignNpmScripts` 写了默认值，
+    // 其余三个键在 facts.json 里缺失时会被**直接丢掉** —— 于是
+    // `--update` 之后 `privateDocsToCheck` 消失，私有仓文档从此不被检查，
+    // 而它照样打印「✓ 已重新测量」与「✓ 全部一致」。这是外部审查抓到的。
+    // 现在每个键都有默认值，并且**写完复核一遍**（丢键就立刻报错，不静默）。
+    const CONFIG_DEFAULTS = {
+      _说明:
+        'docsToCheck/privateDocsToCheck 只放描述当前状态的文件；历史文件（CHANGELOG 等）不放进来。foreignNpmScripts 是别的仓（网站）的脚本名，文档提到它们不算错。',
+      docsToCheck: ['README.md', 'PLAN.md'],
+      privateDocsToCheck: ['AGENTS.md'],
+      historicalFiles: ['CHANGELOG.md', 'Personal Memory/CHANGELOG.md', 'Personal Memory/PLAN.md'],
+      foreignNpmScripts: ['verify'],
+    };
+    const CONFIG_KEYS = Object.keys(CONFIG_DEFAULTS);
     const merged = { ...measured };
     for (const k of CONFIG_KEYS) {
-      if (oldFacts && k in oldFacts) merged[k] = oldFacts[k];
-      else if (k === '_说明') merged[k] = 'docsToCheck 只放**描述当前状态**的文件。历史文件不放进来 —— 那里写的是当时的数字，改它等于篡改历史。';
-      else if (k === 'foreignNpmScripts') merged[k] = ['verify'];
+      // 旧值优先（人可能改过作用域）；没有才用默认
+      merged[k] = oldFacts && k in oldFacts ? oldFacts[k] : CONFIG_DEFAULTS[k];
     }
+
+    // **写完复核**：配置键一个都不能少。
+    // 「检查范围悄悄变小」与「检查通过」在输出上必须长得不一样 ——
+    // 否则这个脚本本身就成了它要治的那种东西。
+    const missing = CONFIG_KEYS.filter((k) => !(k in merged) || merged[k] === undefined);
+    if (missing.length) {
+      console.error(`${red('✗')} 内部错误：合并后缺了配置键 ${missing.join('、')} —— 没有写盘。`);
+      console.error(dim('  写下去会让审计静默缩小检查范围，所以宁可不写。'));
+      process.exit(2);
+    }
+    // 空数组也是"什么都不查"，同样要拦（默认值非空，所以空值只可能来自人手改）
+    const emptied = CONFIG_KEYS.filter((k) => Array.isArray(merged[k]) && merged[k].length === 0 && CONFIG_DEFAULTS[k].length > 0);
+    if (emptied.length) {
+      console.error(`${red('✗')} 拒绝写盘：${emptied.join('、')} 是空数组 —— 那等于"什么都不查"。`);
+      console.error(dim('  真要缩小范围就改成一个非空清单；要停用某项检查得走代码评审，不能靠清空配置。'));
+      process.exit(2);
+    }
+
     writeFileSync(FACTS_PATH, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
     console.log(`\n${green('✓')} 已重新测量并写回 scripts/facts.json\n`);
     if (drift.length) {

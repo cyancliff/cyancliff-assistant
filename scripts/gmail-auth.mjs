@@ -292,7 +292,10 @@ export async function gmailFetch(urlPath, init = {}, { retries = 2, baseDelayMs 
         headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` },
       });
     } catch (err) {
+      // 网络层失败：**结果未知**（请求可能已经到达服务端）。
+      // `unknownOutcome` 是给发信那条路用的判据 —— 见 mail-send.mjs 的三态标记。
       lastErr = new Error(`Gmail API 请求发不出去：${err.message}`);
+      lastErr.unknownOutcome = true;
       // 网络层失败 —— 值得重试
       if (attempt < retries) continue;
       throw lastErr;
@@ -310,13 +313,21 @@ export async function gmailFetch(urlPath, init = {}, { retries = 2, baseDelayMs 
 
     const msg = `Gmail API ${res.status}：${json?.error?.message || text.slice(0, 300)}`;
 
+    // 状态码要**挂在错误对象上**，不能只留在消息字符串里。
+    // 调用方（尤其是发信那条路）要靠它区分两种失败：
+    //   4xx = 服务端明确拒绝 → 这封信没发出去 → 可以安全重试
+    //   5xx / 429 = 可能已经被处理 → 结果未知 → 不能自动重发
+    const err = new Error(msg);
+    err.status = res.status;
+    err.unknownOutcome = res.status === 429 || res.status >= 500;
+
     // 只有可能自己好的才重试
     const retryable = res.status === 429 || res.status >= 500;
     if (retryable && attempt < retries) {
-      lastErr = new Error(msg);
+      lastErr = err;
       continue;
     }
-    throw new Error(msg);
+    throw err;
   }
 
   throw lastErr ?? new Error('Gmail API 调用失败');

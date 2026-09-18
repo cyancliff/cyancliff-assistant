@@ -518,10 +518,42 @@ async function main() {
       try {
         writeFileSync(msgPath, msg, 'utf8');
         git(siteDir, ['add', '--', relTarget]);
-        const commit = git(siteDir, ['commit', '-F', msgPath]);
+        /**
+         * **必须带路径限制**（2026-09-19 修，外部审查抓到的 blocker）。
+         *
+         * 原先只写 `git commit -F <msg>` —— 而 `git commit` **提交整个暂存区**。
+         * 于是：你在网站仓里已经暂存了别的改动 → 跑一次 publish →
+         * **那些改动被一起提交了**，而脚本打印的却是
+         * 「✓ 已提交（只含 src/content/garden/x.md）」、提交信息里也写着
+         * 「本次提交只含这一个文件」。**三处都在说假话。**
+         *
+         * ## 参数顺序是实测出来的，别改
+         *
+         *   `git commit -F <msg> -- <path>`      ✅ 只提交这个路径，其余暂存的改动不动
+         *   `git commit --only -- <path> -F <m>` ❌ `-F` 被当成 pathspec，报
+         *                                           "pathspec '-F' did not match"
+         *   `git commit --only -- <path>`        ❌ 要求路径已在索引里，否则同样报错
+         *
+         * 也就是说：**`--` 之后不能再跟选项**。
+         */
+        const commit = git(siteDir, ['commit', '-F', msgPath, '--', relTarget]);
         rmSync(msgPath, { force: true });
         if (commit.ok) {
-          console.log(`${green('✓')} 已提交（只含 ${relTarget}）`);
+          // **提交后核对**：说了"只含这一个"，就得证明它是真的。
+          // 光看 git commit 的退出码不算证明 —— 它成功与"提交对了东西"是两件事。
+          const inCommit = git(siteDir, ['show', '--name-only', '--format=', 'HEAD']).out
+            .split('\n')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const expected = relTarget.split(path.sep).join('/');
+          const extra = inCommit.filter((f) => f !== expected);
+          if (extra.length) {
+            console.error(`${red('✗')} 提交里出现了**不该有的文件** —— 这是脚本的 bug，请报告：`);
+            for (const f of extra) console.error(`    ${f}`);
+            console.error(dim(`  期望只含 ${expected}`));
+          } else {
+            console.log(`${green('✓')} 已提交，且核对过：只含 ${relTarget}`);
+          }
           const short = git(siteDir, ['rev-parse', '--short', 'HEAD']).out;
           console.log(dim(`  ${short} —— 未推送。要发布上线就自己 push。`));
         } else {
@@ -546,7 +578,16 @@ async function main() {
 function selfTestRun() {
   console.log(`\n${bold('publish.mjs 自测')}\n`);
   let bad = 0;
+  /**
+   * 数出来的，不是写死的。
+   *
+   * 这里原先写死 `42 项` —— 而文件里实际有 55 条断言（2026-09-19 的外部审查指出）。
+   * **写死的数字是一种恒真断言**：它永远不会失败，所以它永远发现不了自己过期。
+   * 这个项目在 `contract.mjs` 里刚修过同一类问题（断言数要机器数）。
+   */
+  let total = 0;
   const t = (name, got, expect) => {
+    total++;
     const ok = JSON.stringify(got) === JSON.stringify(expect);
     console.log(`  ${ok ? green('✓') : red('✗')} ${name}${ok ? '' : `\n      期望 ${JSON.stringify(expect)}\n      得到 ${JSON.stringify(got)}`}`);
     if (!ok) bad++;
@@ -673,10 +714,10 @@ function selfTestRun() {
 
   console.log('');
   if (bad) {
-    console.log(`${red('✗')} ${bad} 项不通过\n`);
+    console.log(`${red('✗')} ${bad}/${total} 项不通过\n`);
     process.exit(1);
   }
-  console.log(`${green('✓')} 全部通过（42 项）\n`);
+  console.log(`${green('✓')} 全部通过（${total} 项）\n`);
   process.exit(0);
 }
 

@@ -52,7 +52,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { classify, senderAddress, isBulkSender } from './mail-classify.mjs';
+import { classify, senderAddress, isBulkSender, looksAutomated } from './mail-classify.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, '..');
@@ -206,9 +206,25 @@ export function judgeImportance(mail, history = null) {
   const why = [];
   const subject = mail.subject || '';
   const from = mail.from || '';
+  const labels = Array.isArray(mail.labels) ? mail.labels : null;
   const base = classify({ subject, from });
-  const bulk = isBulkSender(from);
+  /**
+   * 「是不是机器发的」用两道判据（见 `looksAutomated`）：
+   * 地址模式 + **Gmail 自己的分类标签**。
+   * 只看地址会漏（`team@` 这种看着像人的群发地址），只看标签会在
+   * 默认邮箱（根本不分类）上失效 —— 两者取或，且都拿不到时是"不知道"而非"不是"。
+   */
+  const bulk = looksAutomated(from, labels);
   const addr = senderAddress(from);
+  /**
+   * 「有证据说这一类你不在乎」：机器发的 + 收过至少 3 封 + 一封没读过。
+   *
+   * **刻意不只看"没读过"**：「你没读」不等于「不重要」，可能只是没空看。
+   * **也刻意不只看"机器发的"**：机器发的信里也有重要的（那由升级词兜住）。
+   * 两条同时成立才算有证据 —— 这个判据要提前算，因为噪声那一档也要用它。
+   */
+  const historySaysRoutine =
+    history && history.senderTotal >= 3 && history.senderUnread === history.senderTotal;
 
   // ① 升级词 —— **排在所有降权判据之前**，包括噪声。
   //
@@ -229,15 +245,40 @@ export function judgeImportance(mail, history = null) {
     return { importance: 'high', needsReply: false, why };
   }
 
-  // ② 规则层：明确噪声出局（**在升级词之后**）
+  // ② 规则层判了噪声 —— 但**"噪声"不等于"可以丢"**（这个项目的规矩）。
+  //
+  // 分两种处理，区别在**有没有证据**：
+  //
+  //   · 机器发的 + 你收过至少 3 封、一封没读过 → 有证据说这一类你不在乎 → 忽略
+  //   · 其余（包括**完全没有历史**的）→ 攒进每日汇总，不打断你，也不悄悄丢掉
+  //
+  // 第二行是 2026-09-19 接进真数据之后补的：Anthropic 的营销信
+  // （`team@email.anthropic.com`，Gmail 归 CATEGORY_UPDATES）原来会落到 ignore，
+  // 而它此前**从没出现过** —— 拿"从没见过"当"不重要"是没有依据的。
   if (base.kind === 'noise') {
-    return { importance: 'ignore', needsReply: false, why: [`规则层判为噪声（${base.noise.join('/')}）`] };
+    why.push(`规则层判为噪声（${base.noise.join('/')}）`);
+    /**
+     * 「有证据说这一类你不在乎」——**分两档，因为两类发件人的门槛不一样**：
+     *
+     *   · 已经是机器发的：收过 ≥2 封、一封没读过就够了
+     *     （对机器发件人本来就不指望你读，两封不理已经说明问题）
+     *   · 不确定是不是机器发的：要 ≥3 封、一封没读过
+     *     （地址猜"是不是机器"永远有漏网 —— `weekly@news.example.com` 就被漏了，
+     *      所以不能把"机器"当必要条件，只能当**降低门槛**的理由）
+     *
+     * 两档都不满足 → 攒进每日汇总。**"没证据"不等于"不重要"**。
+     */
+    const enough = bulk ? history && history.senderTotal >= 2 : historySaysRoutine;
+    if (enough && history.senderUnread === history.senderTotal) {
+      why.push(`你收过 ${history.senderTotal} 封、一封没读过${bulk ? '（且是机器发的）' : ''} → 忽略`);
+      return { importance: 'ignore', needsReply: false, why };
+    }
+    why.push('但没有"你不在乎这一类"的证据（历史不足）→ 攒进每日汇总，不丢');
+    return { importance: 'digest', needsReply: false, why };
   }
 
   // ③ 例行通知 → 降权
   const routine = ROUTINE.find((r) => r.re.test(subject));
-  const historySaysRoutine =
-    history && history.senderTotal >= 3 && history.senderUnread === history.senderTotal;
 
   if (routine) {
     const isCode = /验证码|verification code|your code|one-?time|otp/i.test(subject);
@@ -278,12 +319,29 @@ export function judgeImportance(mail, history = null) {
       needsReply = true;
       why.push('要回：你回过这个发件人（历史往来）');
     } else if (!history) {
-      // **没有历史 ≠ 不重要。** 这个邮箱里"真人第一次写信"是罕见事件，
-      // 漏掉它的代价比多一条通知大 —— 所以首次来信念直接推。
-      // 代价说清：陌生人的推销信也会走这条路（它们通常进不了 p2p，但会有例外）。
+      /**
+       * 没有历史数据时的处理。
+       *
+       * **这里的第一版是错的，而且是接进真数据之后才发现的**（2026-09-19）：
+       * 它原先无条件判"首次来信 → high + needsReply"，于是真扫一遍的结果是
+       * Anthropic 的**营销信**（`team@email.anthropic.com`）被判 high 且"要回"。
+       * 6/9 封 high，等于把通知疲劳原样搬了回来。
+       *
+       * 错因很简单：**"没有历史"不等于"是人写的"**。
+       * 这个账户只取过一部分邮件，所以"没有历史"里混着大量机器发件人。
+       *
+       * 现在按发件人性质分两条路：
+       *   · 机器发的 + 没历史 → 没有任何证据说它重要 → 攒进每日汇总
+       *   · 人发的   + 没历史 → 这个邮箱里真人第一次写信是罕见事件，
+       *                          漏掉的代价比多一条通知大 → 推，并且算"要回"
+       */
+      if (bulk) {
+        why.push('第一次见到这个机器发件人 —— 没有证据说它重要，攒进汇总');
+        return { importance: 'digest', needsReply: false, why };
+      }
       needsReply = true;
       firstContact = true;
-      why.push('第一次收到这个发件人的信（没有历史）→ 直接推给你，自己看一眼');
+      why.push('第一次收到这个发件人的信（没有历史，且不是机器地址）→ 直接推给你，自己看一眼');
     }
   } else if (ASKS_REPLY.some((a) => a.re.test(subject))) {
     why.push('标题在要求回复，但发件人是批量地址 —— **不给它生成回复**');
@@ -362,11 +420,113 @@ function showFixture() {
 }
 
 const args = process.argv.slice(2);
+
+/**
+ * `--scan`：连 Gmail 扫未读，过漏斗，输出**判定结果**。
+ *
+ * ## 为什么要有它（2026-09-19 加，外部审查发现的 P1）
+ *
+ * 漏斗做完之后，**生产路径里没有任何人调用它** —— `feishu-bot.mjs` 的 `/取信`
+ * 调的还是 `mail-triage.mjs`（只做标题/发件人规则），于是"25 封里 24 封是废话"
+ * 的问题**一点没变**。判断改好了但没接上，等于没改。
+ *
+ * 这个模式是给程序用的接口（风格与 `mail-triage.mjs --json` 一致）：
+ * **`--json` 时 stdout 必须是纯 JSON**，人看的一律走 stderr。
+ * 这条规矩是踩过的：标题那行打在 JSON 前面，调用方 `JSON.parse` 直接失败，
+ * 而报的是"没有返回 JSON"—— 完全指不出真正的原因是多了一行标题。
+ */
+async function scan() {
+  const jsonMode = args.includes('--json');
+  const limitIdx = args.indexOf('--limit');
+  const limit = limitIdx !== -1 ? Number(args[limitIdx + 1]) || 25 : 25;
+  const say = (...a) => (jsonMode ? console.error(...a) : console.log(...a));
+
+  // 动态 import：本文件的自测不该需要凭据或网络，而 gmail-auth 会读凭据文件
+  const { gmailFetch, getEnv } = await import('./gmail-auth.mjs');
+
+  const query = getEnv('GMAIL_TRIAGE_QUERY') || 'is:unread in:inbox';
+  say(`\n${bold('重要性盘点')}  ${dim(query)}  上限 ${limit}\n`);
+
+  let list;
+  try {
+    list = await gmailFetch(`/users/me/messages?maxResults=${limit}&q=${encodeURIComponent(query)}`);
+  } catch (err) {
+    console.error(`${red('✗')} 取信失败：${err.message}`);
+    process.exit(1);
+  }
+
+  const ids = (list.messages || []).map((m) => m.id);
+  if (!ids.length) {
+    if (jsonMode) console.log(JSON.stringify({ scanned: 0, failed: 0, rows: [] }, null, 2));
+    else console.log(dim('  没有匹配的邮件。\n'));
+    process.exit(0);
+  }
+
+  // 历史层：只读已取回邮件的元数据，不额外调 API
+  const stats = buildSenderStats();
+
+  const rows = [];
+  let failed = 0;
+  for (const [i, id] of ids.entries()) {
+    try {
+      const d = await gmailFetch(
+        `/users/me/messages/${id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`
+      );
+      const h = (n) => (d.payload.headers.find((x) => x.name === n) || {}).value || '';
+      const from = h('From');
+      const subject = h('Subject');
+      // labelIds 是 Gmail 自己的分类，比关键词准 —— 拿它当"是不是机器发的"的第二道判据
+      const verdict = judgeImportance(
+        { subject, from, labels: Array.isArray(d.labelIds) ? d.labelIds : null },
+        stats.get(senderAddress(from)) || null
+      );
+      rows.push({ id, subject, from, date: h('Date'), labels: d.labelIds || null, ...verdict });
+    } catch (e) {
+      failed++;
+      if (failed <= 2) console.error(`  ${dim(`第 ${i + 1} 封读取失败：${e.message.slice(0, 70)}`)}`);
+    }
+    if (i % 10 === 9) await new Promise((r) => setTimeout(r, 300));
+  }
+
+  if (jsonMode) {
+    console.log(JSON.stringify({ scanned: rows.length, failed, rows }, null, 2));
+    process.exit(0);
+  }
+
+  const high = rows.filter((r) => r.importance === 'high');
+  const digest = rows.filter((r) => r.importance === 'digest');
+  const ignore = rows.filter((r) => r.importance === 'ignore');
+
+  console.log(`  ${bold(`扫描 ${rows.length} 封`)}${failed ? dim(`（${failed} 封读取失败）`) : ''}`);
+  console.log(
+    `  ${red(`要立刻看 ${high.length}`)}   ${yellow(`汇总 ${digest.length}`)}   ${dim(`忽略 ${ignore.length}`)}\n`
+  );
+
+  if (high.length) {
+    console.log(`  ${bold('要立刻看的：')}\n`);
+    for (const r of high) {
+      console.log(`  ${red('●')} ${r.subject.slice(0, 58)}`);
+      console.log(`    ${dim(r.from.slice(0, 62))}`);
+      console.log(`    ${dim(r.why.join('；'))}`);
+      if (r.needsReply) console.log(`    ${cyan('→ 这封看起来要回复')}`);
+    }
+    console.log('');
+  } else {
+    console.log(dim('  没有需要立刻看的。\n'));
+  }
+  if (digest.length) console.log(dim(`  ${digest.length} 封攒进每日汇总（收据、一次性通知这类）。\n`));
+
+  console.log(dim('  规则层 + 历史层，不读邮件正文。每条都带理由，自己扫一眼。\n'));
+}
+
 if (args.includes('--self-test')) selfTest();
 else if (args.includes('--fixture')) showFixture();
+else if (args.includes('--scan')) await scan();
 else {
   console.log(`${bold('mail-important.mjs')} — 判断邮件重不重要、要不要回复
 
+  node scripts/mail-important.mjs --scan        扫未读并判定（要凭据；bot 的 /取信 走这条）
+  node scripts/mail-important.mjs --scan --json 结构化输出（stdout 是纯 JSON）
   node scripts/mail-important.mjs --self-test   用基准集自测（不需要凭据）
   node scripts/mail-important.mjs --fixture     打印基准集里每一封的判定
 

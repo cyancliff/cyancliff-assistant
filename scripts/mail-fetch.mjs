@@ -213,6 +213,57 @@ export function messageToMarkdown(msg) {
  *
  * @returns {{fresh: string[], already: string[], written: string[]}}
  */
+
+// ── 阶段（2026-09-19 加，来自一次外部审查）───────────────────
+/**
+ * 一封邮件处理到哪一步了。
+ *
+ * ## 为什么要有这个
+ *
+ * 原先 `seen.processed[id]` 只说明"**取过**"，而 workflow 下一轮只处理
+ * `fetch.fresh` —— 于是这条路径是通的：
+ *
+ *   第一轮：取到信 → 记 seen → **拟稿失败**
+ *   第二轮：它已经不是 fresh 了 → **永远不会再被处理**
+ *
+ * 症状是"偶发丢信"：不报错、不重试、也没有任何地方记着"这封没弄完"。
+ * 而"取过"与"处理完"是两件事，用一个布尔量表达不了。
+ *
+ * ## 阶段只能前进
+ *
+ * `fetched → drafted → notified → confirmed → sent`
+ *
+ * **只能前进不能后退**：重试拟稿失败的那封时阶段仍是 `fetched`；
+ * 若某次把已 `notified` 的退回 `drafted`，下一轮会重复打扰用户。
+ * 所以 `advanceStage` 显式检查顺序。
+ *
+ * 字段缺失（旧 seen.json）一律当作 `fetched` —— 保守：
+ * 宁可多拟一次草稿（幂等，会覆盖），也不要漏掉一封。
+ */
+export const STAGES = ['fetched', 'drafted', 'notified', 'confirmed', 'sent'];
+
+export function stageOf(seen, id) {
+  const s = seen?.processed?.[id]?.stage;
+  return STAGES.includes(s) ? s : 'fetched';
+}
+
+/** 把某封邮件的阶段推进到 `stage`；**只前进**，后退会被忽略并返回 false。 */
+export function advanceStage(seen, id, stage) {
+  const rec = seen?.processed?.[id];
+  if (!rec) return false;
+  if (STAGES.indexOf(stage) <= STAGES.indexOf(stageOf(seen, id))) return false;
+  rec.stage = stage;
+  rec.stage_at = new Date().toISOString();
+  return true;
+}
+
+/** 还没处理完的（阶段低于 `drafted`）—— 下一轮要重试的正是这些。 */
+export function pendingIds(seen) {
+  return Object.keys(seen?.processed || {}).filter(
+    (id) => STAGES.indexOf(stageOf(seen, id)) < STAGES.indexOf('drafted')
+  );
+}
+
 export function applyMessages(messages, seen, { dryRun = false, writeFile = null } = {}) {
   const fresh = [];
   const already = [];

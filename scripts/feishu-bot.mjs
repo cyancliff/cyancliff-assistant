@@ -169,20 +169,42 @@ function makePorts(channel, { log }) {
     },
 
     // 业务
+    /**
+     * `/取信` 走**重要性漏斗**，不是旧的规则分类。
+     *
+     * ## 为什么换（2026-09-19，外部审查发现的 P1）
+     *
+     * 漏斗（`mail-important.mjs`）做完之后，这里原先调的仍是 `mail-triage.mjs` ——
+     * 而它只做标题/发件人的关键词匹配。实测：45 封未读里它报"需动作 25 封"，
+     * 其中 17 封是例行登录提醒。**判断改好了却没接上，等于没改。**
+     *
+     * 现在分成三档，与漏斗的语义一致：
+     *   · high   → 立刻推给你
+     *   · digest → 攒进每日汇总（不打断你）
+     *   · ignore → 不出现
+     *
+     * `mail-triage.mjs` 保留但退到"底层候选分类"，不再单独决定推什么。
+     */
     mailSummary: async ({ limit = 60 } = {}) => {
-      const j = await runJson('mail-triage.mjs', ['--json', '--limit', String(limit)]);
+      const j = await runJson('mail-important.mjs', ['--scan', '--json', '--limit', String(limit)]);
       const rows = j.rows || [];
       return {
         scanned: j.scanned ?? rows.length,
         counts: {
-          signal: rows.filter((r) => r.kind === 'signal').length,
-          plain: rows.filter((r) => r.kind === 'plain').length,
-          noise: rows.filter((r) => r.kind === 'noise').length,
+          high: rows.filter((r) => r.importance === 'high').length,
+          digest: rows.filter((r) => r.importance === 'digest').length,
+          ignore: rows.filter((r) => r.importance === 'ignore').length,
         },
+        // 只有 high 会进推送；digest 只报个数（每日汇总那条通道还没做，见计划阶段 2）
         items: rows
-          .filter((r) => r.kind !== 'noise')
-          .sort((a, b) => (b.weight || 0) - (a.weight || 0))
-          .map((r) => ({ subject: r.subject || '(无主题)', from: r.from || '(未知发件人)', kind: r.kind })),
+          .filter((r) => r.importance === 'high')
+          .map((r) => ({
+            subject: r.subject || '(无主题)',
+            from: r.from || '(未知发件人)',
+            kind: 'high',
+            why: (r.why || []).join('；'),
+            needsReply: Boolean(r.needsReply),
+          })),
       };
     },
 

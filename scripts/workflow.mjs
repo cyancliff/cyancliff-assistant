@@ -44,7 +44,7 @@ import { DATA_ROOT, getEnv, ENV_PATH, gmailFetch, readToken, credentialsPath } f
 import { sendNotify } from './notify-lib.mjs';
 import { parseMailFile, buildPrompt, templateDraft, findApiKey, callModel, renderDraft, draftPath, historyFrom, extractEmail } from './mail-draft.mjs';
 import { readDraft, readConfirm, writeConfirm, setFrontmatter, bodyHash } from './mail-send.mjs';
-import { applyMessages, loadSeenFile, saveSeenFile } from './mail-fetch.mjs';
+import { applyMessages, loadSeenFile, saveSeenFile, stageOf, advanceStage, pendingIds, STAGES } from './mail-fetch.mjs';
 import { restartIfNeeded } from './proxy.mjs';
 
 // 联网脚本：这条流程要调 Gmail 和模型（见 proxy.mjs 顶部说明）
@@ -85,7 +85,14 @@ export async function stepFetch({ ports, query, limit, dryRun = false }) {
     dryRun,
     writeFile: (id, md) => ports.writeMail(id, md),
   });
-  if (!dryRun) ports.saveSeen(seen);
+  // 新取到的标成 `fetched`：**这一步只说明"取过"**，不代表处理完了。
+  // 下一轮靠 `pendingIds()` 把停在这一阶段的捞回来（见 runMailWorkflow）。
+  if (!dryRun) {
+    for (const id of r.fresh) {
+      if (typeof ports.advanceStage === 'function') ports.advanceStage(id, 'fetched');
+    }
+    ports.saveSeen(seen);
+  }
 
   return { phase: 'fetch', ok: true, count: full.length, fresh: r.fresh, already: r.already };
 }
@@ -113,6 +120,9 @@ export async function stepPrepare({ ports, ids, dryRun = false }) {
       const draftBody = await ports.draftFor(id, { mail, ...context });
       if (!draftBody || !draftBody.trim()) throw new Error('草稿是空的');
       if (!dryRun) ports.writeDraft(id, { mail, draftBody, ...context });
+      // 阶段推进：拟稿成功才记 `drafted`。
+      // 失败的不推进 → 下一轮 `pendingIds` 会把它捞回来重试（这就是 P1 的修复）。
+      if (!dryRun && typeof ports.advanceStage === 'function') ports.advanceStage(id, 'drafted');
       prepared.push({ id, subject: String(mail.meta.subject || ''), chars: draftBody.trim().length });
     } catch (err) {
       failed.push({ id, why: err.message });
@@ -146,6 +156,9 @@ export async function stepNotify({ ports, prepared, dryRun = false }) {
     try {
       const r = await ports.notify({ body, title: `待确认：${p.subject || p.id}` });
       results.push({ id: p.id, ok: r.ok, why: r.ok ? null : (r.detail || r.reason) });
+      // 阶段推进：通知真的推出去了才记 `notified`。
+      // 推失败就停在 `drafted` —— 下一轮会重试拟稿（幂等覆盖）并再推一次。
+      if (r.ok && !dryRun && typeof ports.advanceStage === 'function') ports.advanceStage(p.id, 'notified');
     } catch (err) {
       results.push({ id: p.id, ok: false, why: err.message });
     }
@@ -200,8 +213,27 @@ export async function runMailWorkflow({ ports, query, limit, dryRun = false, fin
   const fetch = await stepFetch({ ports, query, limit, dryRun });
   steps.push(fetch);
 
-  const toPrepare = fetch.fresh;
+  /**
+   * 要拟稿的是**"取过但没弄完"的**，不只是"这一轮新取到的"。
+   *
+   * 2026-09-19 修（外部审查发现的 P1）：原先这里只有 `fetch.fresh`，于是
+   * 第一轮拟稿失败的邮件永远不会被再处理 —— 它已经不 fresh 了。
+   * 症状是"偶发丢信"：不报错、不重试、也没地方记着它没弄完。
+   *
+   * 现在合并两拨：
+   *   · this round 新取的（fresh）
+   *   · 历史上停在 `fetched` 阶段的（pending，即之前拟稿失败或被中断的）
+   *
+   * `stepPrepare` 与 `stepNotify` 都是幂等的（草稿覆盖写、通知按 id 去重），
+   * 所以重复处理是安全的 —— 而**漏掉**不是。
+   */
+  const pending = typeof ports.pendingIds === 'function' ? ports.pendingIds() : [];
+  const toPrepare = [...new Set([...fetch.fresh, ...pending])];
+
   if (toPrepare.length) {
+    if (pending.length) {
+      console.log(`  ${dim(`其中 ${pending.length} 封是上一次没弄完的（拟稿失败或被中断），这一轮重试。`)}`);
+    }
     const prep = await stepPrepare({ ports, ids: toPrepare, dryRun });
     steps.push(prep);
     if (prep.prepared.length) {
@@ -226,6 +258,21 @@ export function realPorts() {
     fetchMessage: (id) => gmailFetch(`/users/me/messages/${id}?format=full`),
     loadSeen: () => loadSeenFile(),
     saveSeen: (seen) => saveSeenFile(seen),
+    /**
+     * 阶段推进要**立刻落盘**，不能等最后那次 `saveSeen`。
+     *
+     * 为什么：`stepPrepare` 跑在 `stepFetch` 的 `saveSeen` **之后**。
+     * 如果阶段只改内存里的对象、等下一次取信才写盘，那么"拟稿成功但进程随后崩了"
+     * 这一段里阶段就丢了 —— 下一轮会把已经拟好的信重拟一遍（幂等，但白花钱），
+     * 更糟的是"通知已推、阶段没落盘"会导致**重复打扰用户**。
+     * 所以：改一次，写一次。这个文件很小，代价可忽略。
+     */
+    advanceStage: (id, stage) => {
+      const seen = loadSeenFile();
+      if (advanceStage(seen, id, stage)) saveSeenFile(seen);
+      return true;
+    },
+    pendingIds: () => pendingIds(loadSeenFile()),
     readConfirm: (id) => readConfirm(id),
     bodyHash: (body) => bodyHash(body),
     writeMail: (id, md) => {
@@ -379,10 +426,12 @@ export function fakePorts({ mailCount = 2, notifyFails = false, sendFails = fals
       state.saveSeenCalls++;
       seen = s;
     },
+    // 阶段相关：与真端口同语义（内存版，因为假端口本来就不落盘）
+    advanceStage: (id, stage) => advanceStage(seen, id, stage),
+    pendingIds: () => pendingIds(seen),
     readConfirm: (id) => confirms.get(id) || null,
     bodyHash: (body) => bodyHash(body),
-    writeMail: (id, md) => mails.set(id, md),
-    parseMail: (id) => {
+    writeMail: (id, md) => mails.set(id, md),    parseMail: (id) => {
       const md = mails.get(id);
       if (!md) return null;
       const m = md.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
@@ -406,8 +455,15 @@ export function fakePorts({ mailCount = 2, notifyFails = false, sendFails = fals
     },
     buildContext: () => ({ history: [], preferences: '', rules: '' }),
     draftFor: async (id) => {
+      // 每次调用都**重新查一遍** draftFails（而不是闭包里拷贝一份）：
+      // 测试要能"第一次失败、把 id 移出去、第二次成功"，那才是重试。
       if (draftFails.includes(id)) throw new Error('合成：这一步故意失败');
       return `合成草稿：回复 ${id}。`;
+    },
+    /** 测试用：把一个 id 从"拟稿失败名单"里移出去（模拟下一轮条件好了）。 */
+    _stopFailingDraft(id) {
+      const i = draftFails.indexOf(id);
+      if (i !== -1) draftFails.splice(i, 1);
     },
     writeDraft: (id, { mail, draftBody, history, preferences, rules }) => {
       drafts.set(id, {
@@ -499,7 +555,16 @@ if (isMain) {
   if (args.includes('--self-test')) {
     console.log(`\n${bold('能力组合自测')} ${dim('（合成数据，不碰网络也不碰真实邮箱）')}\n`);
     let bad = 0;
+    /**
+     * 自报项数。
+     *
+     * 加它是因为：这一组从 13 项长到了 21 项，而输出里**不写数字** —— 于是
+     * 文档里的"13 项断言"过期了很久也没人发现。`contract.mjs` 现在优先采信
+     * 脚本自报的总数（比数 ✓ 行准），所以报出来是有用的，不是装饰。
+     */
+    let total = 0;
     const chk = (name, ok, extra = '') => {
+      total++;
       console.log(`  ${ok ? green('✓') : red('✗')} ${name}${extra ? dim(`  ${extra}`) : ''}`);
       if (!ok) bad++;
     };
@@ -538,6 +603,35 @@ if (isMain) {
       `${notifiedBefore} → ${p1._state.notified.length}`
     );
 
+    /**
+     * 2.5) **拟稿失败的那封，下一轮必须重试**（P1，2026-09-19 修）。
+     *
+     * 修之前的行为：`toPrepare = fetch.fresh`，而"取信"那一步已经把它记进 seen 了。
+     * 于是第一轮拟稿失败 → 第二轮它不再是 fresh → **永远不再处理**。
+     * 症状是"偶发丢信"：不报错、不重试、也没有任何地方记着它没弄完。
+     *
+     * 这条测试在修之前会失败 —— 这正是它存在的理由。
+     */
+    const pRetry = fakePorts({ mailCount: 2, draftFails: ['fake-002'] });
+    const rr1 = await runMailWorkflow({ ports: pRetry, query: 'is:unread', limit: 25 });
+    const prepR1 = rr1.steps.find((s) => s.phase === 'prepare');
+    chk('重试场景：第一轮拟稿 1 成功 1 失败', prepR1.prepared.length === 1 && prepR1.failed.length === 1, `成功 ${prepR1.prepared.length} 失败 ${prepR1.failed.length}`);
+    chk('重试场景：失败的被记下来（不是静默跳过）', prepR1.failed[0].id === 'fake-002' && /故意失败/.test(prepR1.failed[0].why));
+
+    // 失败的那封停在 fetched，所以它算"没处理完"
+    chk('重试场景：失败的仍是待处理', pRetry.pendingIds().includes('fake-002'));
+    chk('重试场景：成功的不再待处理', !pRetry.pendingIds().includes('fake-001'));
+
+    // 第二轮：条件好了（不再失败），它必须被重试并成功
+    pRetry._stopFailingDraft('fake-002');
+    const rr2 = await runMailWorkflow({ ports: pRetry, query: 'is:unread', limit: 25 });
+    const prepR2 = rr2.steps.find((s) => s.phase === 'prepare');
+    chk('★ 第二轮把它捞回来了（这就是修好的那条）', Boolean(prepR2), prepR2 ? `处理了 ${prepR2.prepared.length} 封` : '没有 prepare 步骤');
+    chk('★ 第二轮拟稿成功', prepR2 && prepR2.prepared.some((x) => x.id === 'fake-002'));
+    chk('★ 第二轮之后它不再是待处理', !pRetry.pendingIds().includes('fake-002'));
+    // 已成功的那封**不能**被重做（否则每轮都会重推通知）
+    chk('★ 已经处理完的没有跟着重来', !prepR2.prepared.some((x) => x.id === 'fake-001'));
+
     // 3) 未确认就 finish：闸门 1 应当拦住
     const p3 = fakePorts({ mailCount: 1 });
     const r3a = await runMailWorkflow({ ports: p3, query: 'is:unread', limit: 25 });
@@ -573,7 +667,7 @@ if (isMain) {
     await runMailWorkflow({ ports: p6, query: 'is:unread', limit: 25, dryRun: true });
     chk('dry-run 时不写 seen', p6._state.saveSeenCalls === 0, `${p6._state.saveSeenCalls} 次`);
 
-    console.log(`\n  ${bad ? red('✗') : green('✓')} ${bad ? `${bad} 项不通过` : '编排逻辑通过'}\n`);
+    console.log(`\n  ${bad ? red('✗') : green('✓')} ${bad ? `${bad}/${total} 项不通过` : `编排逻辑通过（${total} 项）`}\n`);
     process.exit(bad ? 1 : 0);
   }
 
