@@ -2,7 +2,16 @@
 
 把文档变成**可引用、可核验**的 Markdown。
 
-零依赖：Node 脚本只用内置模块，Python 脚本只需要 PyMuPDF。
+**依赖很少，但不是零**（这句原先写的是"零依赖"，而它已经不对了 —— 2026-09-19 修正）：
+
+| 部分 | 依赖 |
+|---|---|
+| 文档工具（`cite-check` / `pdf-to-md` / `docx-to-md` / `find-quote`） | **Node 内置模块 + PyMuPDF**，没有别的 |
+| 能力组合（`workflow` / `mail-triage`） | 同上 —— 端口可注入，自测不需要凭据 |
+| **飞书 bot**（`feishu-*`） | **`@larksuiteoapi/node-sdk`**（唯一一个运行时依赖，约 30MB） |
+
+飞书长连接是私有协议，只能用它官方的 SDK —— 自己实现等于自己写验签与重连。
+这也是"需要一个依赖"和"需要一个公网端点"之间的取舍，见 `PLAN-FEISHU-BOT.md`。
 
 ---
 
