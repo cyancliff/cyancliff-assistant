@@ -1,0 +1,130 @@
+{
+  "testGroups": {
+    "pipeline": {
+      "checks": 49,
+      "ok": true
+    },
+    "credentials": {
+      "checks": 0,
+      "ok": true
+    },
+    "idempotency": {
+      "checks": 8,
+      "ok": true
+    },
+    "workflow": {
+      "checks": 14,
+      "ok": true
+    },
+    "triage": {
+      "checks": 25,
+      "ok": true
+    },
+    "feishu": {
+      "checks": 148,
+      "ok": true
+    },
+    "publish": {
+      "checks": 55,
+      "ok": true
+    },
+    "hooks": {
+      "checks": 6,
+      "ok": true
+    }
+  },
+  "assertionTotal": 305,
+  "mutationCount": 17,
+  "mutationTarget": "test-feishu.mjs",
+  "trackedFiles": {
+    "public": 37,
+    "private": 40
+  },
+  "npmScripts": [
+    "cite:check",
+    "contract",
+    "contract:fast",
+    "contract:update",
+    "feishu:bot",
+    "feishu:probe",
+    "find",
+    "gate",
+    "gate:push",
+    "mail:auth",
+    "mail:draft",
+    "mail:fetch",
+    "mail:triage",
+    "notify",
+    "publish",
+    "setup",
+    "test",
+    "test:credentials",
+    "test:feishu",
+    "test:hooks",
+    "test:mutations",
+    "test:pipeline",
+    "workflow"
+  ],
+  "scripts": [
+    "cite-check.mjs",
+    "contract.mjs",
+    "docx-to-md.py",
+    "feishu-bot.mjs",
+    "feishu-card.mjs",
+    "feishu-commands.mjs",
+    "feishu-core.mjs",
+    "feishu-policy.mjs",
+    "feishu-probe.mjs",
+    "find-quote.mjs",
+    "gate.mjs",
+    "gmail-auth.mjs",
+    "mail-draft.mjs",
+    "mail-fetch.mjs",
+    "mail-send.mjs",
+    "mail-triage.mjs",
+    "notify-lib.mjs",
+    "notify.mjs",
+    "pdf-to-md.py",
+    "proxy.mjs",
+    "publish.mjs",
+    "run-sh.mjs",
+    "setup.mjs",
+    "test-credentials.mjs",
+    "test-feishu.mjs",
+    "test-hooks.sh",
+    "test-mutations.mjs",
+    "test-pipeline.mjs",
+    "workflow.mjs"
+  ],
+  "hooks": {
+    "prePushExists": true,
+    "preCommitExists": true,
+    "outerHooksPath": ".githooks",
+    "privateHooksPath": ".githooks"
+  },
+  "publish": {
+    "scriptExists": true,
+    "npmScriptExists": true
+  },
+  "site": {
+    "dirExists": true,
+    "hasVerifyScript": true,
+    "verifyChain": "npm run test && npm run build && npm run check-links"
+  },
+  "_说明": "docsToCheck/privateDocsToCheck 只放描述当前状态的文件；历史文件（CHANGELOG 等）不放进来。foreignNpmScripts 是别的仓（网站）的脚本名，文档提到它们不算错。",
+  "docsToCheck": [
+    "README.md",
+    "PLAN.md"
+  ],
+  "privateDocsToCheck": [
+    "AGENTS.md"
+  ],
+  "historicalFiles": [
+    "CHANGELOG.md",
+    "Personal Memory/CHANGELOG.md",
+    "Personal Memory/PLAN.md"
+  ],
+  "foreignNpmScripts": [
+    "verify"
+  ]
+}

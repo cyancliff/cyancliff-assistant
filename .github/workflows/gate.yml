@@ -1,0 +1,56 @@
+# CI —— 每次推送与 PR 都跑一遍
+#
+# ## 这一层补的是什么
+#
+# 本地已经有两道门（`.githooks/pre-commit` 与 `pre-push`），CI 不是重复它们，
+# 而是补**本地门给不了**的三件事：
+#
+#   1. **干净机器**：本地能过、干净 clone 不一定能过（缓存、遗留文件、环境差异）
+#   2. **不依赖本地配置**：`core.hooksPath` 没挂上时本地门是静默失效的，CI 照样跑
+#   3. **突变测试**：它要求工作区干净，所以进不了提交门；CI 的工作区天然干净
+#
+# ## 为什么不需要任何凭据
+#
+# 这不是巧合，是**当初把端口做成可注入的回报**：`workflow.mjs`、`feishu-core.mjs`
+# 的自测都用合成端口，所以整套验证不需要 Gmail、飞书、模型密钥。
+# 密钥不进 CI，也就没有"CI 里的密钥怎么管"这个问题。
+#
+# ## 明确不做的
+#
+#   - 不部署、不发布（发布是人的决定，见 AGENTS.md）
+#   - 不用矩阵（单人、单平台、单 Node 版本，矩阵是给不存在的团队做的）
+
+name: gate
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 装依赖
+        run: npm ci --omit=optional || npm install
+
+      # 提交门的全部（语法 + 契约快审计 + 引用核验）。
+      # 单独跑一遍是为了让失败信息干净：下面 --push 也会跑到它们。
+      - name: 提交门
+        run: node scripts/gate.mjs
+
+      # 推送门：上面那些 + 契约**全量测量** + 全量自测。
+      # 全量测量会重新数断言数并与 facts.json 比对 ——
+      # 所以"有人加了断言但忘了 --update"会在这里被抓住。
+      - name: 推送门
+        run: node scripts/gate.mjs --push
+
+      # 突变测试：故意破坏代码，看自测抓不抓得住。
+      # 它要求工作区干净（怕把改动弄丢），CI 天然满足。
+      - name: 突变测试（证明断言不是恒真的）
+        run: npm run test:mutations

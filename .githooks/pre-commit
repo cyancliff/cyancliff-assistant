@@ -1,0 +1,49 @@
+#!/bin/sh
+# 提交门：语法 + 契约（快审计）+ 引用核验。目标 3 秒内。
+#
+# ## 为什么要有这一道
+#
+# 在这之前，检查是**散着的一堆 npm 脚本，靠人记得跑**。
+# 而"靠人记得"在这个项目里已经被证明不够：契约里那句
+# "发布器是 scripts/publish.mjs" 假了很久，因为**没有任何东西会主动去问
+# "这还是真的吗"**。
+#
+# ## 为什么不是把所有检查都塞进来
+#
+# 全量自测要 30 秒以上。**提交门超过几秒就会被绕过** —— 包括被我自己绕过
+# （`git commit --no-verify`）。所以这里只放快的：
+#
+#   提交（本钩子）      语法 + 契约快审计 + 引用核验        约 2-4 秒
+#   推送（pre-push）    上面全部 + 全量自测 + 契约全量测量
+#   CI                  推送门的全部 + 突变测试
+#
+# **这一层查不到什么**：自测是否通过、事实本身是否变了（那要 --push 或 --update）。
+# 说清楚比假装全覆盖好 —— 假装全覆盖的检查会让人以为推上去是安全的。
+#
+# 装（只在本仓生效）：
+#     git config core.hooksPath .githooks
+#
+# 绕过（不推荐，但留一条明路总比让人删钩子好）：
+#     git commit --no-verify
+
+# 用 node 起头，Windows / git-bash / Linux 都能跑。
+# （这个项目在"shell 脚本在 Windows 上跑不了"上踩过坑，见 scripts/run-sh.mjs）
+if ! command -v node >/dev/null 2>&1; then
+  echo "" >&2
+  echo "  ! pre-commit 跳过：PATH 里没有 node" >&2
+  echo "    门没跑，不是门通过了。" >&2
+  echo "" >&2
+  exit 0
+fi
+
+node scripts/gate.mjs
+status=$?
+
+if [ "$status" != "0" ]; then
+  echo "" >&2
+  echo "    提交被拦下了。上面 ✗ 那几道是原因。" >&2
+  echo "    确实要绕过：git commit --no-verify" >&2
+  echo "" >&2
+fi
+
+exit $status

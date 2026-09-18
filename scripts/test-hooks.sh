@@ -43,6 +43,13 @@ env_blob=$(printf 'SECRET=1\n' | git hash-object -w --stdin)
 tree_env=$(printf '100644 blob %s\t.env\n' "$env_blob" | git mktree)
 c_env=$(git commit-tree "$tree_env" -m 'hook-test: env')
 
+# 这里测的是**数据泄露那一道**。钩子后半段的"质量门"要跑全量自测，
+# 而全量自测里又包含本测试（npm test → test:hooks）—— 不跳过就递归卡死。
+# 所以显式设这个开关。**它是钩子文档里写明的**，不是偷偷绕过：
+# 真实推送不会设它，实现在 .githooks/pre-push 的注释里。
+SKIP_QUALITY_GATE=1
+export SKIP_QUALITY_GATE
+
 run() { # run <local_sha> → 退出码
   printf 'refs/heads/__t %s refs/heads/__t %s\n' "$1" "$Z" \
     | sh "$hook" origin "$public_url" >/dev/null 2>&1
