@@ -37,8 +37,8 @@
   "mutationCount": 17,
   "mutationTarget": "test-feishu.mjs",
   "trackedFiles": {
-    "public": 42,
-    "private": 40
+    "public": 43,
+    "private": 41
   },
   "npmScripts": [
     "cite:check",
@@ -78,6 +78,7 @@
     "find-quote.mjs",
     "gate.mjs",
     "gmail-auth.mjs",
+    "mail-classify.mjs",
     "mail-draft.mjs",
     "mail-fetch.mjs",
     "mail-send.mjs",
