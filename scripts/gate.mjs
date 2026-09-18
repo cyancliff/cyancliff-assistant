@@ -208,7 +208,10 @@ function gateCitations() {
   const outer = run('node', [path.join(HERE, 'cite-check.mjs')]);
   if (outer.status !== 0) problems.push('外层仓条目');
 
-  if (existsSync(PRIVATE)) {
+  // 私有仓：要检查的是**它的 memory/ 真的在**，而不是"Personal Memory 目录存在"。
+  // 原先判的是后者，于是"私有仓没克隆下来"（干净 clone / CI 的常态）
+  // 会被报成"引用核验失败" —— 外部审查在一份干净 clone 上实测到了这一条。
+  if (existsSync(path.join(PRIVATE, 'memory'))) {
     const inner = run('node', [
       path.join(HERE, 'cite-check.mjs'),
       '--scan', path.join(PRIVATE, 'memory'),

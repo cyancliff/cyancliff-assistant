@@ -33,17 +33,103 @@
       "ok": true
     },
     "hooks": {
-      "checks": 6,
+      "checks": 8,
       "ok": true
     }
   },
-  "assertionTotal": 328,
+  "assertionTotal": 330,
   "mutationCount": 17,
   "mutationTarget": "test-feishu.mjs",
-  "trackedFiles": {
-    "public": 46,
-    "private": 41
+  "crossMachine": {
+    "testChecks": {
+      "pipeline": 49,
+      "idempotency": 8,
+      "workflow": 21,
+      "triage": 18,
+      "importance": 21,
+      "feishu": 151,
+      "publish": 54
+    },
+    "mutationCount": 17,
+    "npmScripts": [
+      "cite:check",
+      "contract",
+      "contract:fast",
+      "contract:update",
+      "feishu:bot",
+      "feishu:probe",
+      "find",
+      "gate",
+      "gate:push",
+      "mail:auth",
+      "mail:draft",
+      "mail:fetch",
+      "mail:important",
+      "mail:triage",
+      "notify",
+      "publish",
+      "setup",
+      "test",
+      "test:credentials",
+      "test:feishu",
+      "test:hooks",
+      "test:mutations",
+      "test:pipeline",
+      "test:send-gates",
+      "workflow"
+    ],
+    "scripts": [
+      "cite-check.mjs",
+      "contract.mjs",
+      "docx-to-md.py",
+      "feishu-bot.mjs",
+      "feishu-card.mjs",
+      "feishu-commands.mjs",
+      "feishu-core.mjs",
+      "feishu-policy.mjs",
+      "feishu-probe.mjs",
+      "find-quote.mjs",
+      "gate.mjs",
+      "gmail-auth.mjs",
+      "mail-classify.mjs",
+      "mail-draft.mjs",
+      "mail-fetch.mjs",
+      "mail-important.mjs",
+      "mail-send.mjs",
+      "mail-triage.mjs",
+      "notify-lib.mjs",
+      "notify.mjs",
+      "pdf-to-md.py",
+      "proxy.mjs",
+      "publish.mjs",
+      "run-sh.mjs",
+      "setup.mjs",
+      "test-credentials.mjs",
+      "test-feishu.mjs",
+      "test-hooks.sh",
+      "test-mutations.mjs",
+      "test-pipeline.mjs",
+      "test-send-gates.mjs",
+      "workflow.mjs"
+    ],
+    "preCommitHookExists": true,
+    "prePushHookExists": true,
+    "publishScriptExists": true,
+    "publishNpmScriptExists": true
   },
+  "localOnly": {
+    "_说明": "这三项**只在写这份表的机器上成立**，换机器/干净 clone 就会变。所以它们只打印、不参与漂移比对 —— 否则 CI 必然红，而\"必然红的门\"等于没有门。",
+    "trackedFiles": {
+      "public": 47,
+      "private": 41
+    },
+    "hooks": {
+      "outerHooksPath": ".githooks",
+      "privateHooksPath": ".githooks"
+    },
+    "credentialsChecks": 0
+  },
+  "assertionTotalCrossMachine": 322,
   "npmScripts": [
     "cite:check",
     "contract",
@@ -105,16 +191,6 @@
     "test-send-gates.mjs",
     "workflow.mjs"
   ],
-  "hooks": {
-    "prePushExists": true,
-    "preCommitExists": true,
-    "outerHooksPath": ".githooks",
-    "privateHooksPath": ".githooks"
-  },
-  "publish": {
-    "scriptExists": true,
-    "npmScriptExists": true
-  },
   "site": {
     "dirExists": true,
     "hasVerifyScript": true,

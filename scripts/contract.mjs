@@ -148,7 +148,60 @@ function measure() {
   f.mutationTarget = (mut.match(/const TEST = path\.join\(HERE, '([^']+)'\)/) || [])[1] || '';
 
   // ── 仓库 ──
-  f.trackedFiles = { public: gitLines(ROOT, ['ls-files']).length, private: gitLines(PRIVATE, ['ls-files']).length };
+  /**
+   * **哪些事实在干净 clone 上也成立？**（2026-09-19 加，外部审查发现的"CI 必然红"）
+   *
+   * 原先权威表把三类东西混在一起比对：
+   *
+   *   · 仓级的（脚本清单、npm 脚本、突变数、publish 是否存在）→ 干净 clone 上一样
+   *   · **本机才有的**（私有仓的跟踪文件数、私有仓的钩子、凭据组跑了几项）
+   *     → 换台机器就变，而 CI 上**必然**变
+   *
+   * 结果是 `gate:push` 在任何干净 clone 上**一定失败**，而且照工具自己给的
+   * 提示跑 `--update` 之后仍然失败 —— 那 12 个提交于是从没被推过，
+   * 那个"不依赖本地配置、干净机器"的顶层**零次执行**。
+   *
+   * 现在分开：`crossMachine` 参与漂移比对（错了就是真错），
+   * `localOnly` 只打印、不参与比对（它只说明这台机器的状态）。
+   */
+  f.crossMachine = {
+    // 自测里**跨机可复现的组**：都不依赖凭据或私有仓
+    testChecks: Object.fromEntries(
+      Object.entries(f.testGroups)
+        .filter(([k]) => k !== 'credentials' && k !== 'hooks')
+        .map(([k, v]) => [k, v.checks])
+    ),
+    mutationCount: f.mutationCount,
+    npmScripts: Object.keys(JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts).sort(),
+    scripts: readdirSync(HERE)
+      .filter((n) => statSync(path.join(HERE, n)).isFile())
+      .filter((n) => n.endsWith('.mjs') || n.endsWith('.py') || n.endsWith('.sh'))
+      .sort(),
+    preCommitHookExists: existsSync(path.join(ROOT, '.githooks', 'pre-commit')),
+    prePushHookExists: existsSync(path.join(ROOT, '.githooks', 'pre-push')),
+    publishScriptExists: existsSync(path.join(HERE, 'publish.mjs')),
+    publishNpmScriptExists: 'publish' in JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts,
+  };
+
+  f.localOnly = {
+    _说明:
+      '这三项**只在写这份表的机器上成立**，换机器/干净 clone 就会变。所以它们只打印、不参与漂移比对 —— 否则 CI 必然红，而"必然红的门"等于没有门。',
+    trackedFiles: {
+      public: gitLines(ROOT, ['ls-files']).length,
+      private: existsSync(PRIVATE) ? gitLines(PRIVATE, ['ls-files']).length : null,
+    },
+    hooks: {
+      outerHooksPath: nodeRun('git', ['config', 'core.hooksPath']).out.trim(),
+      privateHooksPath: existsSync(PRIVATE) ? nodeRun('git', ['config', 'core.hooksPath'], { cwd: PRIVATE }).out.trim() : null,
+    },
+    // 凭据组：**有真凭据时它会打印"跳过"并 exit 0**（怕覆盖真文件）。
+    // 于是"0 项"在一台机器上是"跳过了"，在另一台上是"跑了 8 项"。
+    // 这个差别是环境的，不是缺陷 —— 但它绝不能进比对。
+    credentialsChecks: f.testGroups.credentials?.checks ?? null,
+  };
+
+  // 便于文档引用：跨机可复现的断言总数（= 各跨机组之和，不含凭据组与钩子组）
+  f.assertionTotalCrossMachine = Object.values(f.crossMachine.testChecks).reduce((a, b) => a + b, 0);
 
   // ── 脚本清单（文档里提到的 npm script / 文件必须真的在）──
   const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
@@ -159,19 +212,12 @@ function measure() {
     .sort();
 
   // ── 钩子 ──
+  //
+  // 结构（存在吗）进 crossMachine，路径配置（core.hooksPath）进 localOnly。
+  // 后者是**本机 git 配置**，干净 clone 上永远是空的 —— 拿它比对就是让 CI 必红。
   const hookFile = path.join(ROOT, '.githooks', 'pre-push');
-  f.hooks = {
-    prePushExists: existsSync(hookFile),
-    preCommitExists: existsSync(path.join(ROOT, '.githooks', 'pre-commit')),
-    outerHooksPath: nodeRun('git', ['config', 'core.hooksPath']).out.trim(),
-    privateHooksPath: nodeRun('git', ['config', 'core.hooksPath'], { cwd: PRIVATE }).out.trim(),
-  };
 
   // ── 发布链路（这正是那次假契约的所在）──
-  f.publish = {
-    scriptExists: existsSync(path.join(HERE, 'publish.mjs')),
-    npmScriptExists: 'publish' in pkg.scripts,
-  };
 
   // ── 网站（发布目标）──
   const siteArg = process.env.CYANCLIFF_WEB;
@@ -311,24 +357,34 @@ function loadFactsFile() {
   }
 }
 
-/** 比较两次测量的结果，列出漂移。只比"会被文档引用的"字段。 */
+/**
+ * 比较两次测量的结果，列出漂移。
+ *
+ * **只比 `crossMachine`**（2026-09-19 改，原因是外部审查发现"CI 必然红"）：
+ * 那里是"换台机器也一样"的事实（脚本清单、npm 脚本、突变数、各组自测项数）。
+ *
+ * `localOnly`（私有仓文件数、本机 hooksPath、凭据组跑了几项）**不参与比对** ——
+ * 它们在干净 clone 上必然不同，比了就等于让 CI 永远红，
+ * 而"必然红的门"与"没有门"对使用者是一回事。
+ */
 function diffFacts(oldF, newF) {
   const drift = [];
-  const cmp = (label, a, b) => {
-    if (JSON.stringify(a) !== JSON.stringify(b)) drift.push({ what: label, was: a, now: b });
+  const a = oldF?.crossMachine;
+  const b = newF?.crossMachine;
+  if (!a || !b) return drift; // 旧格式 facts.json：没有可比的东西，不算漂移
+
+  const cmp = (label, x, y) => {
+    if (JSON.stringify(x) !== JSON.stringify(y)) drift.push({ what: label, was: x, now: y });
   };
-  if (oldF) {
-    cmp('断言总数', oldF.assertionTotal, newF.assertionTotal);
-    cmp('突变数', oldF.mutationCount, newF.mutationCount);
-    cmp('跟踪文件（公开）', oldF.trackedFiles?.public, newF.trackedFiles?.public);
-    cmp('跟踪文件（私有）', oldF.trackedFiles?.private, newF.trackedFiles?.private);
-    for (const k of Object.keys(newF.testGroups)) {
-      cmp(`自测组 ${k}`, oldF.testGroups?.[k]?.checks, newF.testGroups[k].checks);
-    }
-    cmp('npm 脚本清单', oldF.npmScripts, newF.npmScripts);
-    cmp('脚本文件清单', oldF.scripts, newF.scripts);
-    cmp('pre-commit 钩子存在', oldF.hooks?.preCommitExists, newF.hooks?.preCommitExists);
-    cmp('publish.mjs 存在', oldF.publish?.scriptExists, newF.publish?.scriptExists);
+  cmp('突变数', a.mutationCount, b.mutationCount);
+  cmp('npm 脚本清单', a.npmScripts, b.npmScripts);
+  cmp('脚本文件清单', a.scripts, b.scripts);
+  cmp('pre-commit 钩子存在', a.preCommitHookExists, b.preCommitHookExists);
+  cmp('pre-push 钩子存在', a.prePushHookExists, b.prePushHookExists);
+  cmp('publish.mjs 存在', a.publishScriptExists, b.publishScriptExists);
+  cmp('publish npm 脚本存在', a.publishNpmScriptExists, b.publishNpmScriptExists);
+  for (const k of Object.keys(b.testChecks || {})) {
+    cmp(`自测组 ${k}`, a.testChecks?.[k], b.testChecks[k]);
   }
   return drift;
 }
@@ -386,10 +442,9 @@ function main() {
     console.log(`\n${bold('测量出来的事实')}\n`);
     const show = (k, v) => console.log(`  ${k.padEnd(26)} ${JSON.stringify(v)}`);
     show('assertionTotal', measured.assertionTotal);
-    show('mutationCount', measured.mutationCount);
-    show('trackedFiles', measured.trackedFiles);
-    show('publish', measured.publish);
-    show('hooks', { prePush: measured.hooks.prePushExists, preCommit: measured.hooks.preCommitExists });
+    show('assertionTotalCrossMachine', measured.assertionTotalCrossMachine);
+    show('crossMachine', measured.crossMachine);
+    show('localOnly', measured.localOnly);
     show('site', measured.site);
     console.log(`\n  ${dim('自测分组：')}`);
     for (const [k, v] of Object.entries(measured.testGroups)) {
@@ -490,13 +545,17 @@ function main() {
   }
 
   // 私有仓的文档
+  //
+  // **不存在就跳过，不报错**（2026-09-19 改）。理由与权威表拆成两类是同一条：
+  // 私有仓被 .gitignore 挡住，干净 clone / CI 上**根本没有它** ——
+  // 报"要检查的私有文档不存在"等于让 CI 永远红，而"必然红的门"等于没有门。
+  // （快审计那边一直是跳过的，这里原先不一致 —— 不一致本身就是缺陷。）
   const privDocs = oldFacts?.privateDocsToCheck || [];
+  let privChecked = 0;
   for (const rel of privDocs) {
     const p = path.join(PRIVATE, rel);
-    if (!existsSync(p)) {
-      problems.push({ kind: '要检查的私有文档不存在', detail: `Personal Memory/${rel}` });
-      continue;
-    }
+    if (!existsSync(p)) continue; // 没有私有仓 → 静默跳过（会在输出里写明跳过了几份）
+    privChecked++;
     const text = readFileSync(p, 'utf8');
     numberClaims.push(...scanClaims(`Personal Memory/${rel}`, text, measured));
     for (const r of scanReferences(`Personal Memory/${rel}`, text, referenceCtx)) {
@@ -519,10 +578,18 @@ function main() {
 
   console.log(`\n${bold('契约审计')}\n`);
   console.log(
-    `  权威值：断言 ${measured.assertionTotal} · 突变 ${measured.mutationCount} · ` +
-      `跟踪文件 ${measured.trackedFiles.public}/${measured.trackedFiles.private}（公开/私有）`
+    `  权威值（跨机可复现）：自测 ${measured.assertionTotalCrossMachine} 项 · 突变 ${measured.mutationCount} 个 · ` +
+      `${measured.crossMachine.scripts.length} 个脚本`
   );
-  console.log(dim(`  检查了 ${docFiles.length + privDocs.length} 份描述当前状态的文件\n`));
+  console.log(
+    dim(
+      `  本机事实（不参与比对）：凭据组 ${measured.localOnly.credentialsChecks ?? '—'} 项 · ` +
+        `跟踪文件 ${measured.localOnly.trackedFiles.public}/${measured.localOnly.trackedFiles.private ?? '—'}（公开/私有）`
+    )
+  );
+  console.log(
+    dim(`  检查了 ${docFiles.length + privChecked} 份描述当前状态的文件` + (privChecked < privDocs.length ? `（私有仓文档跳过 ${privDocs.length - privChecked} 份 —— 这台机器上没有它）` : '') + '\n')
+  );
 
   if (result.ok) {
     console.log(`${green('✓')} 全部一致 —— 没有发现过期的数字或指向不存在东西的引用。`);

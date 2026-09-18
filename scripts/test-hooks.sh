@@ -24,6 +24,7 @@ Z=0000000000000000000000000000000000000000
 
 fail=0
 chk() { # chk 描述 期望 实际
+  total=$((total + 1))
   if [ "$2" = "$3" ]; then
     echo "  ✓ $1"
   else
@@ -31,6 +32,13 @@ chk() { # chk 描述 期望 实际
     fail=1
   fi
 }
+
+# 数出来的，不写死。
+#
+# 原先收尾写的是"全部通过（5 项）" —— 而这一步从 5 条长到了 8 条。
+# **写死的数字是恒真断言**：它永远不会失败，所以永远发现不了自己过期。
+# 这个项目在 contract.mjs 与 publish.mjs 里刚修过同一类问题。
+total=0
 
 echo "公开仓 pre-push 钩子 · 突变测试"
 
@@ -64,11 +72,35 @@ chk "拦住 gitlink 'Personal Memory'" 1 "$(run "$c_gitlink")"
 chk "拦住 .env"                      1 "$(run "$c_env")"
 
 # ---- 4. 证明 git 真的会调用它（不是"文件在那儿"而已）----
+#
+# 这一步的断言**改过一次**（2026-09-19，外部审查指出）：
+#
+#   原来写的是 `chk "core.hooksPath 真的挂上了" 1 "$?"` —— 期望退出码是 1。
+#   而 `git hook run` 在**钩子根本不存在**时也报 1：
+#       error: cannot find a hook named pre-push   → exit 1
+#   于是"保护生效"与"保护完全没装"的输出**逐字节相同**，两边都 ✓ 通过。
+#   这是这个项目最怕的那种检查：在机制完全失效时照样绿。
+#
+# 现在要同时满足三件：
+#   ① 钩子真的被 git 找到并执行（从 stderr 里排除 "cannot find a hook"）
+#   ② 它确实拦住了（退出码非 0）
+#   ③ core.hooksPath 指向 .githooks（配置真的挂上了）
 stdin_file=$(mktemp)
 printf 'refs/heads/__t %s refs/heads/__t %s\n' "$c_gitlink" "$Z" > "$stdin_file"
-git hook run --to-stdin="$stdin_file" pre-push -- origin "$public_url" >/dev/null 2>&1
-chk "core.hooksPath 真的挂上了" 1 "$?"
+hook_out=$(git hook run --to-stdin="$stdin_file" pre-push -- origin "$public_url" 2>&1)
+hook_rc=$?
 rm -f "$stdin_file"
+
+case "$hook_out" in
+  *"cannot find a hook"*)
+    chk "git 找得到 pre-push 钩子（找不到就是没装）" "找到了" "找不到：$hook_out" ;;
+  *)
+    chk "git 找得到 pre-push 钩子（找不到就是没装）" "找到了" "找到了" ;;
+esac
+chk "钩子被调用后拦住了（退出码非 0）" "非0" "$([ "$hook_rc" != "0" ] && echo 非0 || echo 0)"
+
+hooks_path=$(git config core.hooksPath)
+chk "core.hooksPath 指向 .githooks" ".githooks" "$hooks_path"
 
 # ---- 5. 私有仓的钩子（公开仓单独 clone 时不存在，跳过）----
 private_hook='Personal Memory/.githooks/pre-push'
@@ -86,7 +118,7 @@ fi
 
 echo ""
 if [ "$fail" = "0" ]; then
-  echo "  全部通过（5 项）"
+  echo "  全部通过（$total 项）"
 else
   echo "  有失败项 —— 钩子的保护是假的"
 fi
