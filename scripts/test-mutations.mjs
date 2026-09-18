@@ -156,6 +156,74 @@ const MUTATIONS = [
     replace: '  return s;',
     why: '中文主题变成 Re: Ã©Â£ÂžÃ¤Â¹Â¦ bot ...（实测踩过；只有发出去才看得见）',
   },
+
+  // ── 以下是 2026-09-19 加的：**三个原先没有任何突变覆盖的文件**
+  //
+  // 外部审查指出：`mail-important.mjs` / `mail-classify.mjs` / `workflow.mjs`
+  // 的自测看起来"有 21 项"，但**没有任何已提交的机制证明过那些断言会失败**。
+  // 下面每一条都对应一个真实的历史缺陷，不是随便改一行。
+  {
+    name: '漏斗：升级词不再优先（放回噪声之后）',
+    file: 'mail-important.mjs',
+    test: 'mail-important.mjs',
+    testArgs: ['--self-test'],
+    find: `  const escalated = ESCALATE.find((e) => e.re.test(subject));
+  if (escalated) {`,
+    replace: `  const escalated = false ? ESCALATE.find((e) => e.re.test(subject)) : null;
+  if (escalated) {`,
+    why: '这条顺序自测逼了两次：先是被例行的"账号…删除"吃掉，再是被噪声判据吃掉。改回去 → "账号将被永久删除"重新变成 ignore，而那是丢账号级别的漏报',
+  },
+  {
+    name: '漏斗：批量地址也给生成回复',
+    file: 'mail-important.mjs',
+    test: 'mail-important.mjs',
+    testArgs: ['--self-test'],
+    find: '  if (!bulk) {',
+    replace: '  if (true) {',
+    why: '那个硬闸门防的是"自动回复变成对营销信、甚至对密码重置信的回信"',
+  },
+  {
+    name: '漏斗：没有历史就一律推（不区分机器发的）',
+    file: 'mail-important.mjs',
+    test: 'mail-important.mjs',
+    testArgs: ['--self-test'],
+    find: `      if (bulk) {
+        why.push('第一次见到这个机器发件人 —— 没有证据说它重要，攒进汇总');
+        return { importance: 'digest', needsReply: false, why };
+      }`,
+    replace: `      if (false) {
+        why.push('第一次见到这个机器发件人 —— 没有证据说它重要，攒进汇总');
+        return { importance: 'digest', needsReply: false, why };
+      }`,
+    why: '接进真数据时抓到的：Anthropic 的营销信被判 high + "要回"，9 封里 6 封 high —— 通知疲劳原样搬回来',
+  },
+  {
+    name: '漏斗：判噪声就直接丢掉（不看有没有证据）',
+    file: 'mail-important.mjs',
+    test: 'mail-important.mjs',
+    testArgs: ['--self-test'],
+    find: '    const enough = bulk ? history && history.senderTotal >= 2 : historySaysRoutine;',
+    replace: '    const enough = false;',
+    why: '"噪声"不等于"可以丢"：没有"你不在乎这一类"的证据时应当攒进汇总而不是忽略',
+  },
+  {
+    name: '编排：拟稿失败的邮件下轮不再重试',
+    file: 'workflow.mjs',
+    test: 'workflow.mjs',
+    testArgs: ['--self-test'],
+    find: '  const toPrepare = [...new Set([...fetch.fresh, ...pending])];',
+    replace: '  const toPrepare = fetch.fresh;',
+    why: '外部审查发现的 P1：取信那一步已经记进 seen 了，于是第一轮拟稿失败 = 永久跳过。症状是"偶发丢信"，不报错也不重试',
+  },
+  {
+    name: '编排：阶段可以倒退（重复打扰用户）',
+    file: 'mail-fetch.mjs',
+    test: 'workflow.mjs',
+    testArgs: ['--self-test'],
+    find: '  if (STAGES.indexOf(stage) <= STAGES.indexOf(stageOf(seen, id))) return false;',
+    replace: '  if (STAGES.indexOf(stage) < STAGES.indexOf(stageOf(seen, id))) return false;',
+    why: '允许同阶段重复推进本身无害，但**倒退**会让已 notified 的退回 drafted，下一轮再推一次给用户',
+  },
 ];
 
 // ── 前置：工作区必须干净 ──────────────────────────────────────
@@ -175,6 +243,30 @@ function assertClean() {
 function runTests() {
   try {
     execFileSync(process.execPath, [TEST], { cwd: ROOT, stdio: 'pipe' });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, output: `${e.stdout || ''}${e.stderr || ''}` };
+  }
+}
+
+/**
+ * **按突变自己的靶子跑测试**（2026-09-19 加）。
+ *
+ * ## 为什么需要
+ *
+ * 原先只有一个 `TEST = test-feishu.mjs`，于是**所有突变都只对着飞书模块**。
+ * 外部审查指出：`mail-important.mjs` / `mail-classify.mjs` / `workflow.mjs`
+ * 这三个文件**没有任何机制做过突变验证** —— 而它们的自测看起来"有 21 项"，
+ * 却没人证明过那些断言会失败。
+ *
+ * 现在每个突变可以自带 `test` 字段（跑哪个自测）；不带就仍用默认的飞书那套
+ * （那 17 个突变是针对它的，改掉它们的靶子会让它们全部失效）。
+ */
+function runTestsFor(m) {
+  const target = m.test ? path.join(HERE, m.test) : TEST;
+  const args = m.testArgs || [];
+  try {
+    execFileSync(process.execPath, [target, ...args], { cwd: ROOT, stdio: 'pipe' });
     return { ok: true };
   } catch (e) {
     return { ok: false, output: `${e.stdout || ''}${e.stderr || ''}` };
@@ -204,7 +296,7 @@ for (const m of MUTATIONS) {
 
   try {
     writeFileSync(file, original.replace(m.find, m.replace), 'utf8');
-    const r = runTests();
+    const r = runTestsFor(m);
 
     if (!r.ok) {
       caught++;
