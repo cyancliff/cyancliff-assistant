@@ -17,6 +17,31 @@
 
 set -u
 
+# ── git 身份：自带，不依赖宿主的全局配置 ──────────────────────
+#
+# 这个脚本用 `git commit-tree` 造测试用的树，而 `commit-tree` 需要一个身份。
+# 本机有 `~/.gitconfig`，所以一直没事；**CI 的 runner 没有**，于是：
+#
+#     fatal: empty ident name (for <runner@runnervmlun5p...>) not allowed
+#
+# `commit-tree` 失败 → `$c_gitlink` / `$c_env` 变成空字符串 → 钩子收到的
+# "远端 sha" 全是 0（它把这个理解成"新建分支、此前什么都没有"）→ 放行，
+# 于是两条断言报「期望 1，实际 0」。
+#
+# 这就是 CI 第三次红的原因（2026-09-20），而且它**和前两条是同一类**：
+# 测试依赖了一件"本机才有的东西"。前一条是 `core.hooksPath`，这一条是全局 git 身份。
+#
+# 用环境变量而不是 `git config`：前者只作用于这条命令，
+# **不写进任何配置文件**（CI 的 runner 是共享的，改它的全局配置不合适）。
+# 身份是测试自己造的，与"谁在提交"无关 —— 它只是 plumbing 需要的一个字段。
+# 注意：如果宿主**已经**配了身份，这里也会覆盖掉，但那无关紧要：
+# 这个脚本产的 commit 从不落到任何分支上，只是喂给钩子看的对象。
+GIT_AUTHOR_NAME='hook-test'
+GIT_AUTHOR_EMAIL='hook-test@local'
+GIT_COMMITTER_NAME='hook-test'
+GIT_COMMITTER_EMAIL='hook-test@local'
+export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+
 hook=.githooks/pre-push
 public_url=git@github.com:cyancliff/cyancliff-assistant.git
 private_url=git@github.com:cyancliff/personal-memory.git
@@ -43,7 +68,37 @@ total=0
 echo "公开仓 pre-push 钩子 · 突变测试"
 
 # ---- 造测试用的树（纯 plumbing，不动工作区、不动索引）----
-inner=$(git -C 'Personal Memory' rev-parse HEAD)
+#
+# gitlink 那条要一个**存在的 commit sha**。原先无条件取私有仓的 HEAD：
+#
+#     inner=$(git -C 'Personal Memory' rev-parse HEAD)
+#
+# 私有仓不在时（干净 clone / CI 的常态）这两条 git 命令都会失败，
+# `$inner` 变成空字符串 → `git mktree` 收到 `160000 commit \tPersonal Memory`
+# —— 空 sha、坏输入 → 树没造出来 → `$c_gitlink` 也空 → 钩子看到全零 sha
+# 就当成"新建分支"放行 → 断言报「期望 1，实际 0」。
+#
+# 表现很误导：**看起来像"钩子漏了 gitlink"（最该拦的那一种），
+# 实际是测试自己没造出东西**。2026-09-20 在 WSL 的干净 clone 上跑出来的：
+#
+#     fatal: cannot change to 'Personal Memory': No such file or directory
+#     fatal: input format error: 160000 commit 	Personal Memory
+#
+# 修法：私有仓在就用它的 HEAD，不在就用**本仓 HEAD** —— 钩子判的是
+# "树里有没有一个叫 Personal Memory 的条目"，sha 指向哪个提交无关紧要。
+# 这样测试在任何机器上都能造出**有效**的 gitlink。
+if [ -d 'Personal Memory/.git' ]; then
+  inner=$(git -C 'Personal Memory' rev-parse HEAD)
+else
+  inner=$(git rev-parse HEAD)
+  echo "  · gitlink 用本仓 HEAD 代替（没有私有仓 —— 干净 clone / CI 的常态；那条断言测的是路径，不是这个 sha）"
+fi
+
+if [ -z "$inner" ]; then
+  echo "  ✗ 内部错误：连本仓 HEAD 都取不到，测试无法构造 gitlink"
+  exit 2
+fi
+
 tree_gitlink=$(printf '160000 commit %s\tPersonal Memory\n' "$inner" | git mktree)
 c_gitlink=$(git commit-tree "$tree_gitlink" -m 'hook-test: gitlink')
 
