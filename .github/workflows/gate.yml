@@ -47,8 +47,25 @@ jobs:
       # 推送门：上面那些 + 契约**全量测量** + 全量自测。
       # 全量测量会重新数断言数并与 facts.json 比对 ——
       # 所以"有人加了断言但忘了 --update"会在这里被抓住。
+      #
+      # `if: failure()` 那一步是 2026-09-20 加的，起因很具体：
+      # 这一步失败时输出**不会**进 GitHub 的步骤日志（它只在 Node 的缓冲区里），
+      # 于是"跑一遍看看"在 CI 上做不到 —— CI 第一次真跑红了两处，
+      # 我两次都只能另起一个 Linux 环境在本机重做，而真正的原因
+      # 一直就在那儿，只是没被打出来。
+      # 现在推送门失败时会把完整输出落盘，这一步负责把它打出来。
       - name: 推送门
         run: node scripts/gate.mjs --push
+
+      - name: 推送门失败时的完整自测输出
+        if: failure()
+        run: |
+          echo "=== .dsh/gate-tests-failed.log（全量自测的完整输出） ==="
+          if [ -f .dsh/gate-tests-failed.log ]; then
+            cat .dsh/gate-tests-failed.log
+          else
+            echo "没有这份日志 —— 说明失败发生在跑自测之前（那就看上面几步的输出）。"
+          fi
 
       # 突变测试：故意破坏代码，看自测抓不抓得住。
       # 它要求工作区干净（怕把改动弄丢），CI 天然满足。

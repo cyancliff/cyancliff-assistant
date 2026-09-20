@@ -258,17 +258,42 @@ function extractFailures(out, max = 4) {
     const l = lines[i];
     if (!/^\s+✗/.test(l)) continue; // 必须带缩进，且以 ✗ 开头
     if (/✓/.test(l)) continue; // 同一行里还有 ✓ 的，是程序输出不是结果
-    // 下一行通常是「期望 X，实际 Y」；再下一行可能是补充说明。最多带 2 行。
+    /**
+     * 细节行**只在第一条也带缩进时才收**。
+     *
+     * 为什么加这一条（2026-09-20 第二次改）：上面那些被测程序往 stdout 打的
+     * `✗ /path/...` 是**顶格**的，它们的续行（如 `  这一步要先修好客户端凭据…`）
+     * 也是顶格或浅缩进。原先无脑收 2 行，于是每次摘出来的"失败行 + 细节"
+     * 其实是**程序输出的头和尾**，拼起来像一句莫名其妙的话：
+     *     失败：✗ .../Person
+     *     细节：这一步要先修好客户端凭据，再谈令牌
+     * 真正的自测结果行（`  ✗ 拦住 .env（期望 1，实际 0）`）是**带缩进**的，
+     * 它的续行（`      期望 …，实际 …`）缩进更深。用缩进把两类分开。
+     */
     const detail = [];
     for (let j = i + 1; j < lines.length && detail.length < 2; j++) {
       const next = lines[j];
       if (!next.trim()) break;
       if (/^\s*[✓✗]/.test(next)) break; // 下一条结果开始了
+      if (!/^\s{4,}/.test(next)) break; // 第一条细节本身不缩进 → 这不是结果行，别硬凑
       detail.push(next.trim().slice(0, 200));
     }
     found.push({ line: l.trim().slice(0, 200), detail });
   }
   return found;
+}
+
+/**
+ * 尾部几行也叫「摘要」的一部分：它回答的是"这个脚本**跑到头**了吗"。
+ *
+ * 为什么必须带它（2026-09-20 第三次改）：CI 三次红，我按"失败行"去读，
+ * 读到的都是被测程序自己的报错文案（顶格 ✗）。而"是自己打印了失败、
+ * 还是进程死在半路"这件事，只有尾部那行能回答 ——
+ * `✗ 2/7 条不合格` 是前者，什么都不打印就是后者。少了它就得靠猜。
+ */
+function extractTail(out, n = 6) {
+  const lines = out.split('\n').map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim());
+  return lines.slice(-n).map((l) => l.slice(0, 200));
 }
 
 function gateTests() {
@@ -298,16 +323,19 @@ function gateTests() {
     }
 
     const failures = extractFailures(out);
-    console.log(`\n  ${red('✗')} 全量自测失败 —— 下面是真正的失败行（最多 4 条）\n`);
+    const tail = extractTail(out);
+    console.log(`\n  ${red('✗')} 全量自测失败\n`);
     if (!failures.length) {
       console.log(`    ${dim('没找到带缩进的 ✗ 结果行 —— 说明失败不在自测的报告里，可能是命令本身没跑起来。')}`);
-      console.log(`    ${dim(out.split('\n').filter(Boolean).slice(-8).join('\n    '))}`);
     } else {
+      console.log(`    ${bold('真正的失败行')}（带缩进的那几行，最多 4 条）：`);
       for (const f of failures) {
-        console.log(`    ${red('✗')} ${f.line}`);
-        for (const d of f.detail) console.log(`        ${dim(d)}`);
+        console.log(`      ${red('✗')} ${f.line}`);
+        for (const d of f.detail) console.log(`          ${dim(d)}`);
       }
     }
+    console.log(`\n    ${bold('输出末尾 6 行')}${dim('（回答"脚本跑到头了吗"：有收尾那行 = 跑完了；没有 = 死在半路）')}：`);
+    for (const l of tail) console.log(`      ${dim(l)}`);
     if (note) console.log(`\n    ${dim(note)}`);
     console.log('');
   }
