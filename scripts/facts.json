@@ -13,7 +13,7 @@
       "ok": true
     },
     "workflow": {
-      "checks": 21,
+      "checks": 30,
       "ok": true
     },
     "triage": {
@@ -37,20 +37,20 @@
       "ok": true
     }
   },
-  "assertionTotal": 330,
-  "mutationCount": 17,
+  "allGroupsTotal": 339,
+  "mutationCount": 23,
   "mutationTarget": "test-feishu.mjs",
   "crossMachine": {
     "testChecks": {
       "pipeline": 49,
       "idempotency": 8,
-      "workflow": 21,
+      "workflow": 30,
       "triage": 18,
       "importance": 21,
       "feishu": 151,
       "publish": 54
     },
-    "mutationCount": 17,
+    "mutationCount": 23,
     "npmScripts": [
       "cite:check",
       "contract",
@@ -129,7 +129,7 @@
     },
     "credentialsChecks": 0
   },
-  "assertionTotalCrossMachine": 322,
+  "assertionTotalCrossMachine": 331,
   "npmScripts": [
     "cite:check",
     "contract",

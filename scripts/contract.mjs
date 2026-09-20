@@ -127,11 +127,11 @@ function measure() {
     publish: ['scripts/publish.mjs', '--self-test'],
   };
   f.testGroups = {};
-  let total = 0;
+  let allGroupsTotal = 0;
   for (const [name, a] of Object.entries(groups)) {
     const r = countChecks(a);
     f.testGroups[name] = { checks: r.checks, ok: r.ok };
-    total += r.checks;
+    allGroupsTotal += r.checks;
   }
   // 钩子的突变测试由 shell 脚本跑，单独数
   const hooks = nodeRun('node', ['scripts/run-sh.mjs', 'scripts/test-hooks.sh']);
@@ -139,8 +139,28 @@ function measure() {
     checks: hooks.out.split('\n').filter((l) => l.includes('✓')).length,
     ok: hooks.status === 0,
   };
-  total += f.testGroups.hooks.checks;
-  f.assertionTotal = total;
+  allGroupsTotal += f.testGroups.hooks.checks;
+
+  /**
+   * **这里没有"断言总数"这个事实 —— 是故意的**（2026-09-19 晚改）。
+   *
+   * 原先有一个 `assertionTotal = 各分组之和`，文档与输出都把它当权威值。
+   * 它错在两处：
+   *
+   *   1. **它把两类事实加在一起** —— 跨机可复现的 7 个组，加上只在这台机器上
+   *      成立的钩子组（8 项）与凭据组（0 项）。而"跨机可复现"正是权威表
+   *      在 09-19 白天刚拆出来的那条线（见下面 crossMachine / localOnly）。
+   *      拆了比对，却没拆这个用来展示与引用的数字。
+   *   2. **它读起来在两次运行之间是稳的，但只是巧合** —— 实测：同一台机器、
+   *      同一份代码，上一版报 331、这一版报 339，中间什么都没变，
+   *      因为 331 那次的 `workflow` 组少 9、钩子组少算 1，两处互相抵消。
+   *      一个"权威值"靠误差相消才对得上，它就是下一个假契约。
+   *
+   * 所以现在只留一个口径：`assertionTotalCrossMachine`（各跨机组之和）。
+   * 各分组之和若要打出来，必须**同时**说清它含本机项 —— 见 `--list` 与
+   * 审计输出。文档里只能引用跨机那个数。
+   */
+  f.allGroupsTotal = allGroupsTotal;
 
   // ── 突变测试 ──
   const mut = readFileSync(path.join(HERE, 'test-mutations.mjs'), 'utf8');
@@ -244,7 +264,9 @@ function measure() {
  */
 const CLAIM_PATTERNS = [
   {
-    fact: 'assertionTotal',
+    // 认的是**跨机可复现**那个口径，不是"各分组之和"。
+    // 文档引用的总额必须换台机器也算得出来，否则它就不是事实而是环境快照。
+    fact: 'assertionTotalCrossMachine',
     // "246 项断言"、"250 项"（项后面可以跟断言/检查）
     re: /(\d+)\s*项(?:断言|检查)?/g,
     // 只在这些词附近才算"总额声明"，避免把"147 项"这类分组数字当成总额
@@ -257,7 +279,7 @@ const CLAIM_PATTERNS = [
     re: /(?:全部|一共|总共|合计)\s*(\d+)\s*个突变/g,
   },
   {
-    fact: 'assertionTotal',
+    fact: 'assertionTotalCrossMachine',
     re: /(\d+)\s*项[，,]*\s*(?:全部|合计|总共|一共)/g,
   },
 ];
@@ -441,8 +463,8 @@ function main() {
   if (listOnly) {
     console.log(`\n${bold('测量出来的事实')}\n`);
     const show = (k, v) => console.log(`  ${k.padEnd(26)} ${JSON.stringify(v)}`);
-    show('assertionTotal', measured.assertionTotal);
     show('assertionTotalCrossMachine', measured.assertionTotalCrossMachine);
+    show('allGroupsTotal（含本机项，别引用）', measured.allGroupsTotal);
     show('crossMachine', measured.crossMachine);
     show('localOnly', measured.localOnly);
     show('site', measured.site);
@@ -565,7 +587,7 @@ function main() {
 
   const result = {
     ok: problems.length === 0 && numberClaims.length === 0 && refClaims.length === 0,
-    facts: { assertionTotal: measured.assertionTotal, mutationCount: measured.mutationCount },
+    facts: { assertionTotalCrossMachine: measured.assertionTotalCrossMachine, mutationCount: measured.mutationCount },
     problems,
     numberClaims,
     refClaims,
@@ -583,8 +605,10 @@ function main() {
   );
   console.log(
     dim(
-      `  本机事实（不参与比对）：凭据组 ${measured.localOnly.credentialsChecks ?? '—'} 项 · ` +
-        `跟踪文件 ${measured.localOnly.trackedFiles.public}/${measured.localOnly.trackedFiles.private ?? '—'}（公开/私有）`
+      `  本机事实（不参与比对）：钩子组 ${measured.testGroups.hooks?.checks ?? '—'} 项 · ` +
+        `凭据组 ${measured.localOnly.credentialsChecks ?? '—'} 项 · ` +
+        `跟踪文件 ${measured.localOnly.trackedFiles.public}/${measured.localOnly.trackedFiles.private ?? '—'}（公开/私有）` +
+        `\n  （上面那个"自测 N 项"只含跨机组；各分组之和 ${measured.allGroupsTotal} 把本机项也加了进去，所以文档里引用它必错）`
     )
   );
   console.log(
