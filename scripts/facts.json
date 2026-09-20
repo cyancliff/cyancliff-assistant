@@ -21,7 +21,7 @@
       "ok": true
     },
     "importance": {
-      "checks": 21,
+      "checks": 23,
       "ok": true
     },
     "feishu": {
@@ -37,7 +37,7 @@
       "ok": true
     }
   },
-  "allGroupsTotal": 339,
+  "allGroupsTotal": 341,
   "mutationCount": 23,
   "mutationTarget": "test-feishu.mjs",
   "crossMachine": {
@@ -46,7 +46,7 @@
       "idempotency": 8,
       "workflow": 30,
       "triage": 18,
-      "importance": 21,
+      "importance": 23,
       "feishu": 151,
       "publish": 54
     },
@@ -129,7 +129,7 @@
     },
     "credentialsChecks": 0
   },
-  "assertionTotalCrossMachine": 331,
+  "assertionTotalCrossMachine": 333,
   "npmScripts": [
     "cite:check",
     "contract",

@@ -128,6 +128,18 @@
       "mail": { "subject": "您的账户已欠费，服务将在 3 天后暂停", "from": "云服务 <billing@cloud.example.com>" },
       "history": { "senderTotal": 9, "senderUnread": 9, "senderReplied": 0, "seenDays": [5, 15, 30] },
       "expect": { "importance": "high", "needsReply": false }
+    },
+    {
+      "why": "**这条是补的盲区**（2026-09-20）：批量地址 + 没有历史 + 标题在要求回复。它走的正是那条硬闸门（`asks` 分支），而原先**没有任何用例能走到那里** —— 那两条『批量地址不该回信』的用例都在噪声层就出局了（见上面 password reset 那条的说明）。没有它，把 `if (!bulk)` 改成 `if (true)` 自测照样全绿：突变测试抓到的就是这个。注意它仍然推给用户（标题里有内容信号：请确认），只是**不生成回复**",
+      "mail": { "subject": "Please confirm your shipping address", "from": "Shop <no-reply@shop.example.com>" },
+      "history": null,
+      "expect": { "importance": "high", "needsReply": false }
+    },
+    {
+      "why": "**同一条闸门的另一半**：真人 + 没有历史 + 标题在要求回复 → 要回。与上一条只差发件人是不是机器。两条必须同时在，否则上述突变会以『批量也变成要回』或『真人也不再要回』任一方向漏过去",
+      "mail": { "subject": "Please confirm your shipping address", "from": "同学 <classmate2@example.com>" },
+      "history": null,
+      "expect": { "importance": "high", "needsReply": true }
     }
   ]
 }

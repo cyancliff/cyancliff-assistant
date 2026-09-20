@@ -187,15 +187,21 @@ const MUTATIONS = [
     file: 'mail-important.mjs',
     test: 'mail-important.mjs',
     testArgs: ['--self-test'],
-    find: `      if (bulk) {
-        why.push('第一次见到这个机器发件人 —— 没有证据说它重要，攒进汇总');
-        return { importance: 'digest', needsReply: false, why };
-      }`,
-    replace: `      if (bulk) {
-        why.push('MUTATION：机器发的也当首次来信推');
-        return { importance: 'high', needsReply: true, why };
-      }`,
-    why: '接进真数据时抓到的：Anthropic 的营销信被判 high + "要回"，9 封里 6 封 high —— 通知疲劳原样搬回来',
+    /**
+     * **这条原先打的是死代码**（2026-09-20 修正）。
+     *
+     * 原来的写法把 `if (bulk) { …第一次见到这个机器发件人… }` 整段替换掉。
+     * 但那段写在 `if (!bulk) { … }` 里面 —— 恒假、不可达。于是这条突变
+     * **等价于什么都没改**，任何测试都不可能抓住它。表现是突变测试永远报
+     * `22/23 被抓住`，而这道门正好是 CI 的第一步：**CI 从第一次跑起就是红的。**
+     *
+     * 现在改打真正活着的那个闸门：把"批量地址一律不生成回复"的守卫拿掉。
+     * 用基准集里那条 `no-reply@` + 无历史 + 标题在要求回复的用例来抓它 ——
+     * 那一封在 `asks` 分支出结果，正是这条守卫决定的。
+     */
+    find: '  if (!bulk) {\n    const asks = ASKS_REPLY.find((a) => a.re.test(subject));',
+    replace: '  if (true) {\n    const asks = ASKS_REPLY.find((a) => a.re.test(subject));',
+    why: '接进真数据时抓到的：Anthropic 的营销信被判 high + "要回"，9 封里 6 封 high —— 通知疲劳原样搬回来。这条闸门就是防它的：批量地址哪怕标题写着"请确认"，也不给生成回复',
   },
   {
     name: '漏斗：判噪声就直接丢掉（不看有没有证据）',

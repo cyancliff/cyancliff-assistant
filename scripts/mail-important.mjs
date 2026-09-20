@@ -330,15 +330,20 @@ export function judgeImportance(mail, history = null) {
        * 错因很简单：**"没有历史"不等于"是人写的"**。
        * 这个账户只取过一部分邮件，所以"没有历史"里混着大量机器发件人。
        *
-       * 现在按发件人性质分两条路：
-       *   · 机器发的 + 没历史 → 没有任何证据说它重要 → 攒进每日汇总
-       *   · 人发的   + 没历史 → 这个邮箱里真人第一次写信是罕见事件，
-       *                          漏掉的代价比多一条通知大 → 推，并且算"要回"
+       * 第一版修法是在这里再分两条路。**但那条"机器发的"分支从来没被执行过**：
+       * 它写在 `if (!bulk)` 里面，里面再问 `if (bulk)` —— 恒假。
+       * （2026-09-20 发现：突变测试里针对它的一条突变因此永远不会被抓住，
+       *   CI 从第一次跑起就是红的。**不可达的代码不能被任何断言验证。**）
+       *
+       * 现在只留一条路，机器发件人那半由外层两道兜住，两处都不需要它：
+       *   · 规则层判噪声的（`support@` 这类）→ ② 已 return digest
+       *   · 有内容信号的（本用例）→ `asks` 抢先，`needsReply` 保持 false
+       *   · 其余 → 末尾那句 `return { importance: 'digest', needsReply }`，
+       *     而 `needsReply` 在 `!bulk` 之外恒为初始值 false
+       *
+       * 所以"**批量地址一律不生成回复**"这条硬闸门（见上面那句注释）
+       * 完整地由 `if (!bulk)` 自己保证，这里只需管真人首次来信。
        */
-      if (bulk) {
-        why.push('第一次见到这个机器发件人 —— 没有证据说它重要，攒进汇总');
-        return { importance: 'digest', needsReply: false, why };
-      }
       needsReply = true;
       firstContact = true;
       why.push('第一次收到这个发件人的信（没有历史，且不是机器地址）→ 直接推给你，自己看一眼');
@@ -395,6 +400,9 @@ function selfTest() {
 
   console.log('');
   if (bad) {
+    // 分母写 `data.cases.length` 而不是字面量：`23` 这个数在本仓里是**突变条数**
+    // （见 test-mutations.mjs），抄到这里就会变成另一件事的数字，
+    // 而且加用例时不会跟着变（2026-09-20 核过一遍，此处本来就对，留注释防回退）。
     console.log(`${red('✗')} ${bad}/${data.cases.length} 项与基准不符\n`);
     process.exit(1);
   }
