@@ -73,7 +73,9 @@ chk "拦住 .env"                      1 "$(run "$c_env")"
 
 # ---- 4. 证明 git 真的会调用它（不是"文件在那儿"而已）----
 #
-# 这一步的断言**改过一次**（2026-09-19，外部审查指出）：
+# 这一步的断言**改过两次**。
+#
+# 第一次（2026-09-19，外部审查指出）：
 #
 #   原来写的是 `chk "core.hooksPath 真的挂上了" 1 "$?"` —— 期望退出码是 1。
 #   而 `git hook run` 在**钩子根本不存在**时也报 1：
@@ -81,26 +83,45 @@ chk "拦住 .env"                      1 "$(run "$c_env")"
 #   于是"保护生效"与"保护完全没装"的输出**逐字节相同**，两边都 ✓ 通过。
 #   这是这个项目最怕的那种检查：在机制完全失效时照样绿。
 #
-# 现在要同时满足三件：
-#   ① 钩子真的被 git 找到并执行（从 stderr 里排除 "cannot find a hook"）
-#   ② 它确实拦住了（退出码非 0）
-#   ③ core.hooksPath 指向 .githooks（配置真的挂上了）
-stdin_file=$(mktemp)
-printf 'refs/heads/__t %s refs/heads/__t %s\n' "$c_gitlink" "$Z" > "$stdin_file"
-hook_out=$(git hook run --to-stdin="$stdin_file" pre-push -- origin "$public_url" 2>&1)
-hook_rc=$?
-rm -f "$stdin_file"
-
-case "$hook_out" in
-  *"cannot find a hook"*)
-    chk "git 找得到 pre-push 钩子（找不到就是没装）" "找到了" "找不到：$hook_out" ;;
-  *)
-    chk "git 找得到 pre-push 钩子（找不到就是没装）" "找到了" "找到了" ;;
-esac
-chk "钩子被调用后拦住了（退出码非 0）" "非0" "$([ "$hook_rc" != "0" ] && echo 非0 || echo 0)"
-
+# 第二次（2026-09-20，CI 第一次真跑）：
+#
+#   下面这两条在**干净 clone 上必然失败**，于是 CI 从第一次跑起就是红的。
+#   根因是同一个东西的两面：`core.hooksPath` 是**本机 git 配置**，
+#   clone 不会把它带过来 —— 干净机器上它必然是空的。
+#   而"钩子没装"在那台机器上**是事实，不是缺陷**：CI 从不需要推送，
+#   它也不该因为"我的开发机配置没跟过来"而变红。
+#
+#   于是按本仓自己的架构处理（见 contract.mjs 的 crossMachine / localOnly）：
+#   **本机才成立的事实只打印、不参与判定。** 没装就说清"跳过了什么、
+#   这台机器上什么没被验证"，而不是把"没装"报成"保护是假的"。
+#
+#   代价要说明白：**CI 不再验证 core.hooksPath 真的挂上了。**
+#   那道验证只在本机跑（`npm test` 在装了钩子的机器上照旧验它）。
+#   CI 里仍有下面 ①② 的前提检查与 ③④（造出泄露物看拦不拦得住），
+#   但判据来自**直接执行钩子文件**，不依赖本机 git 配置。
 hooks_path=$(git config core.hooksPath)
-chk "core.hooksPath 指向 .githooks" ".githooks" "$hooks_path"
+
+if [ -n "$hooks_path" ]; then
+  # ①②③ 本机装了钩子：证明 git 真的会调用它
+  stdin_file=$(mktemp)
+  printf 'refs/heads/__t %s refs/heads/__t %s\n' "$c_gitlink" "$Z" > "$stdin_file"
+  hook_out=$(git hook run --to-stdin="$stdin_file" pre-push -- origin "$public_url" 2>&1)
+  hook_rc=$?
+  rm -f "$stdin_file"
+
+  case "$hook_out" in
+    *"cannot find a hook"*)
+      chk "git 找得到 pre-push 钩子（找不到就是没装）" "找到了" "找不到：$hook_out" ;;
+    *)
+      chk "git 找得到 pre-push 钩子（找不到就是没装）" "找到了" "找到了" ;;
+  esac
+  chk "钩子被调用后拦住了（退出码非 0）" "非0" "$([ "$hook_rc" != "0" ] && echo 非0 || echo 0)"
+  chk "core.hooksPath 指向 .githooks" ".githooks" "$hooks_path"
+else
+  echo "  · 跳过「git 会不会真的调用它」3 项（core.hooksPath 没设 —— 干净 clone / CI 的常态）"
+  echo "    这台机器上没被验证的是：钩子名解析、core.hooksPath 配置。"
+  echo "    装法：git config core.hooksPath .githooks"
+fi
 
 # ---- 5. 私有仓的钩子（公开仓单独 clone 时不存在，跳过）----
 private_hook='Personal Memory/.githooks/pre-push'
