@@ -27,7 +27,7 @@
  */
 
 import { spawnSync, execFileSync } from 'node:child_process';
-import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs';
+import { readdirSync, statSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
@@ -225,6 +225,52 @@ function gateCitations() {
 }
 
 // ── 4. 全量自测（只在推送门）─────────────────────────────────
+/**
+ * 从自测输出里挑出**真正的失败**，并把它的下一行一起带上。
+ *
+ * ## 这段为什么存在（2026-09-20 重写）
+ *
+ * 原先是这一行：
+ *
+ *     const failed = out.split('\n').filter((l) => l.includes('✗')).slice(0, 2).join(' | ');
+ *
+ * 它错在两处，而且两处都在**最需要它的时候**才暴露 —— CI 第一次真跑：
+ *
+ *   1. **它截的是"含 ✗ 的行"，不是"失败的行"。** 被自测测的那些程序自己就会
+ *      打印带 ✗ 的报错文案（`gmail-auth` 的「✗ 凭据文件不是合法 JSON」就是），
+ *      于是摘要里出现的是那两行，真正的失败行被挤掉了。
+ *   2. **它没有带上"下一行"。** 这个仓的自测把「期望 X，实际 Y」打在
+ *      **标题行的下一行**（`chk()` / `test-hooks.sh` 都是这个格式），
+ *      所以只取标题行等于把答案丢掉：留下的是一句被腰斩的路径，
+ *      60 字符处断在 `.../Person`，看的人只能猜。
+ *
+ * 结果是：CI 三次红，我三次都在读同一句被腰斩的话，最后不得不另起一个
+ * Linux 环境去复现 —— 而真正的原因**一直就在那儿，只是没被打出来**。
+ * 这是"报错信息要指得准"那条规矩欠在**门自己**身上的债。
+ *
+ * 现在的判据：**带缩进**的行才是自测报告的结果行（`  ✗ 拦住 .env（期望 1，实际 0）`）；
+ * 顶格的行是它跑的那些程序自己的 stdout（`✗ /path/...`），不算 —— 这一条是实测撞出来的。
+ */
+function extractFailures(out, max = 4) {
+  const lines = out.split('\n').map((l) => l.replace(/\s+$/, ''));
+  const found = [];
+  for (let i = 0; i < lines.length && found.length < max; i++) {
+    const l = lines[i];
+    if (!/^\s+✗/.test(l)) continue; // 必须带缩进，且以 ✗ 开头
+    if (/✓/.test(l)) continue; // 同一行里还有 ✓ 的，是程序输出不是结果
+    // 下一行通常是「期望 X，实际 Y」；再下一行可能是补充说明。最多带 2 行。
+    const detail = [];
+    for (let j = i + 1; j < lines.length && detail.length < 2; j++) {
+      const next = lines[j];
+      if (!next.trim()) break;
+      if (/^\s*[✓✗]/.test(next)) break; // 下一条结果开始了
+      detail.push(next.trim().slice(0, 200));
+    }
+    found.push({ line: l.trim().slice(0, 200), detail });
+  }
+  return found;
+}
+
 function gateTests() {
   const t0 = Date.now();
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -232,9 +278,42 @@ function gateTests() {
   // —— 传 args 数组会被 Node 拼接并报 DEP0190。这个坑 publish.mjs 里也遇到过。
   const r = spawnSync(`${npm} test`, { cwd: ROOT, encoding: 'utf8', shell: true, maxBuffer: 64 * 1024 * 1024 });
   const out = `${r.stdout || ''}${r.stderr || ''}`;
-  const failed = out.split('\n').filter((l) => l.includes('✗')).slice(0, 2).join(' | ');
-  record('全量自测', r.status === 0, r.status === 0 ? '' : failed, Date.now() - t0);
-  return r.status === 0;
+  const ok = r.status === 0;
+
+  if (!ok) {
+    /**
+     * **失败时把完整输出落盘，并把路径打出来。**
+     * 为什么必须落盘：CI 里这一步的输出**只进得了 Node 的缓冲区**，
+     * 不会出现在 GitHub 的步骤日志里 —— 于是"跑一遍看看"在 CI 上做不到，
+     * 只能在本机重做一遍环境才能查。存一份文件是最便宜的补救。
+     */
+    const logPath = path.join(ROOT, '.dsh', 'gate-tests-failed.log');
+    let note = '';
+    try {
+      mkdirSync(path.dirname(logPath), { recursive: true });
+      writeFileSync(logPath, out, 'utf8');
+      note = `完整输出：${path.relative(ROOT, logPath)}`;
+    } catch (e) {
+      note = `（完整输出落盘失败：${e.message}）`;
+    }
+
+    const failures = extractFailures(out);
+    console.log(`\n  ${red('✗')} 全量自测失败 —— 下面是真正的失败行（最多 4 条）\n`);
+    if (!failures.length) {
+      console.log(`    ${dim('没找到带缩进的 ✗ 结果行 —— 说明失败不在自测的报告里，可能是命令本身没跑起来。')}`);
+      console.log(`    ${dim(out.split('\n').filter(Boolean).slice(-8).join('\n    '))}`);
+    } else {
+      for (const f of failures) {
+        console.log(`    ${red('✗')} ${f.line}`);
+        for (const d of f.detail) console.log(`        ${dim(d)}`);
+      }
+    }
+    if (note) console.log(`\n    ${dim(note)}`);
+    console.log('');
+  }
+
+  record('全量自测', ok, ok ? '' : '见上面那几行（这次不再截断）', Date.now() - t0);
+  return ok;
 }
 
 // ── 跑 ────────────────────────────────────────────────────────
